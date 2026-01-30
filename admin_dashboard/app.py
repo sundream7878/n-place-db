@@ -44,20 +44,29 @@ def stop_engine():
         except: return False
     return False
 
-def run_engine_cmd(target, count, resume=False):
+def run_engine_cmd(target, count, mode="new"): # mode: "new", "resume", "recovery"
     try:
         my_env = os.environ.copy()
         my_env["PYTHONIOENCODING"] = "utf-8"
         my_env["PYTHONUNBUFFERED"] = "1"
         
         log_f = open(ENGINE_LOG_FILE, "a", encoding="utf-8")
-        label = "RESUME" if resume else "NEW RUN"
+        
+        label_map = {"new": "NEW RUN", "resume": "RESUME", "recovery": "SMART RECOVERY"}
+        label = label_map.get(mode, "UNKNOWN")
+        
         log_f.write(f"\n--- ENGINE {label}: {time.strftime('%Y-%m-%d %H:%M:%S')} (Target: {target}) ---\n")
         log_f.flush()
         
-        script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'step1_refined_crawler.py'))
-        args = [sys.executable, script_path, str(target) if target else "전체", str(count)]
-        if resume: args.append("--resume")
+        if mode == "recovery":
+             # Smart Recovery Script (Currently hardcoded for Seoul/Missing districts)
+             script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'engine_recover_missing.py'))
+             args = [sys.executable, script_path]
+        else:
+             # Standard Crawler
+             script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'step1_refined_crawler.py'))
+             args = [sys.executable, script_path, str(target) if target else "전체", str(count)]
+             if mode == "resume": args.append("--resume")
         
         p = subprocess.Popen(
             args, stdout=log_f, stderr=log_f, env=my_env,
@@ -86,6 +95,10 @@ if 'last_selected_shop' not in st.session_state:
 for track in ['A', 'B', 'C']:
     if f'sel_track_{track}' not in st.session_state:
         st.session_state[f'sel_track_{track}'] = {}
+
+# Initialize pending updates for competitor analysis
+if 'pending_update_districts' not in st.session_state:
+    st.session_state['pending_update_districts'] = set()
 
 # --- Template Persistence Logic ---
 TEMPLATE_FILE = os.path.join(os.path.dirname(__file__), "templates.json")
@@ -244,99 +257,156 @@ def load_data():
     
     return combined
 
-def delete_shop(shop_id, place_link=None, shop_name=None):
-    """지정된 샵과 관련된 모든 중복 데이터를 삭제합니다."""
+def find_affected_shops(df, deleted_names):
+    """
+    Finds shops that have any of the 'deleted_names' in their top_9_competitors.
+    Returns a list of shop IDs to be re-analyzed.
+    """
+    affected_ids = set()
+    if 'top_9_competitors' not in df.columns:
+        return []
+    
+    # Normalize deleted names for comparison
+    del_names_set = set(str(n).strip() for n in deleted_names if n)
+    
+    for idx, row in df.iterrows():
+        # Skip if this row is one of the ones being deleted (though they should be handled by caller)
+        c_data = row.get('top_9_competitors')
+        if not c_data: continue
+        
+        try:
+            # Parse if string
+            comps = json.loads(c_data) if isinstance(c_data, str) else c_data
+            if not isinstance(comps, list): continue
+            
+            # Check if any competitor matches a deleted name
+            for c in comps:
+                c_name = str(c.get('name', '')).strip()
+                if c_name in del_names_set:
+                    affected_ids.add(row['ID'])
+                    break
+        except:
+            continue
+            
+    return list(affected_ids)
+
+def delete_shop_and_reanalyze(shop_id, place_link=None, shop_name=None):
+    """Deletes a shop and automatically re-analyzes its affected neighbors."""
     success = False
-    deleted_count = 0
+    affected_ids = []
+    
+    # 1. Identify Affected Shops (Pre-calculation)
+    # We use the global 'df' which is loaded in memory.
+    if shop_name and not df.empty:
+        affected_ids = find_affected_shops(df, [shop_name])
+    
+    # 2. Delete the Shop
     try:
         from crawler.db_handler import DBHandler
         db = DBHandler()
         if db.db_fs:
-            # 1. 문서 ID로 직접 삭제
             if shop_id:
                 try:
                     db.db_fs.collection(config.FIREBASE_COLLECTION).document(shop_id).delete()
-                    deleted_count += 1
                     success = True
                 except Exception as e:
-                    logger.warning(f"ID 기반 삭제 실패 (ID: {shop_id}): {e}")
+                    logger.warning(f"ID delete fail: {e}")
             
-            # 2. 식별자(링크, 상호명) 기반 중복 삭제
+            # Delete duplicates
             search_queries = []
             if place_link:
-                search_queries.extend([("source_link", "==", place_link), ("플레이스링크", "==", place_link), ("detail_url", "==", place_link)])
+                search_queries.extend([("source_link", "==", place_link), ("플레이스링크", "==", place_link)])
             if shop_name:
                 search_queries.append(("상호명", "==", shop_name))
-                search_queries.append(("name", "==", shop_name))
 
             for field, op, val in search_queries:
                 try:
                     docs = db.db_fs.collection(config.FIREBASE_COLLECTION).where(field, op, val).stream()
                     for doc in docs:
                         doc.reference.delete()
-                        deleted_count += 1
                         success = True
-                except:
-                    continue
-                
-            if not success:
-                 st.warning("삭제할 수 있는 데이터를 찾지 못했습니다.")
-        else:
-            st.error("데이터베이스 연결에 실패했습니다.")
+                except: continue
     except Exception as e:
-        st.error(f"삭제 작업 중 오류 발생: {e}")
-    
+        st.error(f"Error during deletion: {e}")
+        return
+
+    # 3. Trigger Re-analysis for Affected Shops
     if success:
-        st.toast(f"데이터가 삭제되었습니다. (관련 문서 {deleted_count}개 제거)")
+        msg = "데이터 삭제 완료."
+        if affected_ids:
+            msg += f" (경쟁샵으로 등록했던 {len(affected_ids)}개 업체 재분석 자동 시작...)"
+            try:
+                # Remove the deleted shop itself from affected_ids if present
+                affected_ids = [aid for aid in affected_ids if aid != shop_id]
+                
+                if affected_ids:
+                    st.toast(msg)
+                    from extract_competitors import run_competitor_extraction
+                    run_competitor_extraction(target_ids=affected_ids)
+                    msg = f"삭제 및 이웃 {len(affected_ids)}곳 재분석 완료!"
+            except Exception as e:
+                logger.error(f"Auto-reanalysis failed: {e}")
+                msg += " (재분석 중 오류 발생)"
+        
+        st.success(msg)
         st.cache_data.clear()
         st.session_state['last_selected_shop'] = None
-        time.sleep(0.5)
+        time.sleep(1)
         st.rerun()
 
-def delete_shops_batch(shops_list):
-    """선택된 여러 항목을 일괄 삭제합니다."""
-    if not shops_list:
-        return
-        
+def delete_shops_batch_and_reanalyze(shops_list):
+    """Batch delete and re-analyze affected neighbors."""
+    if not shops_list: return
+    
     total = len(shops_list)
-    progress_text = "데이터를 일괄 삭제 중입니다..."
+    progress_text = "삭제 및 영향 분석 중..."
     my_bar = st.progress(0, text=progress_text)
     
-    deleted_total = 0
+    # 1. Identify Affected Shops
+    names_to_delete = [s.get('상호명') for s in shops_list]
+    ids_to_delete = set(s.get('ID') for s in shops_list)
+    
+    affected_ids = []
+    if not df.empty:
+        affected_ids = find_affected_shops(df, names_to_delete)
+        # Filter out self-references (if any of the deleted shops were in the list)
+        affected_ids = [aid for aid in affected_ids if aid not in ids_to_delete]
+    
     try:
         from crawler.db_handler import DBHandler
         db = DBHandler()
-        if not db.db_fs:
-            st.error("데이터베이스 연결 실패")
-            return
+        if not db.db_fs: return
 
+        # 2. Delete
         for i, shop in enumerate(shops_list):
             sid = shop.get('ID')
-            link = shop.get('플레이스링크') or shop.get('source_link')
-            name = shop.get('상호명')
+            link = shop.get('플레이스링크')
             
-            # 1. 문서 ID 삭제
             try: db.db_fs.collection(config.FIREBASE_COLLECTION).document(sid).delete()
             except: pass
             
-            # 2. 링크/상호명 기반 중복 삭제
             if link:
-                for f in ["source_link", "플레이스링크", "detail_url"]:
-                    try:
-                        docs = db.db_fs.collection(config.FIREBASE_COLLECTION).where(f, "==", link).stream()
-                        for d in docs: d.reference.delete()
-                    except: continue
+                try:
+                    docs = db.db_fs.collection(config.FIREBASE_COLLECTION).where("source_link", "==", link).stream()
+                    for d in docs: d.reference.delete()
+                except: continue
             
             my_bar.progress((i + 1) / total, text=f"삭제 진행 중 ({i+1}/{total})")
             
-        st.success(f"{total}개의 항목(및 관련 중복 데이터)이 모두 삭제되었습니다.")
+        # 3. Auto Re-analysis
+        if affected_ids:
+            st.toast(f"영향 받은 {len(affected_ids)}개 업체의 경쟁샵 정보를 갱신합니다...")
+            from extract_competitors import run_competitor_extraction
+            run_competitor_extraction(target_ids=affected_ids)
+            
+        st.success(f"총 {total}개 삭제 및 {len(affected_ids)}개 이웃 업체 정보 갱신 완료.")
         st.cache_data.clear()
         st.session_state['last_selected_shop'] = None
         st.session_state['prev_rows'] = []
         time.sleep(1)
         st.rerun()
     except Exception as e:
-        st.error(f"일괄 삭제 중 오류: {e}")
+        st.error(f"작업 중 오류: {e}")
 
 df = load_data()
 
@@ -364,7 +434,7 @@ with st.sidebar:
                     # Find last start index
                     start_idx = 0
                     for i, line in enumerate(reversed(lines)):
-                        if "NEW ENGINE RUN" in line:
+                        if "ENGINE NEW RUN" in line or "ENGINE RESUME" in line or "ENGINE SMART RECOVERY" in line:
                             start_idx = len(lines) - 1 - i
                             break
                     
@@ -407,12 +477,10 @@ with st.sidebar:
         c1, c2 = st.columns(2)
         with c1:
             if st.button("✦ 엔진 가동", type="primary", use_container_width=True, key="btn_sb_run"):
-                run_engine_cmd(s_city, 99999, resume=False)
+                run_engine_cmd(s_city, 99999, mode="new")
         with c2:
-            checkpoint_file = os.path.join(os.getcwd(), "crawler_checkpoint.json")
-            can_resume = os.path.exists(checkpoint_file)
-            if st.button("⏭️ 이어하기", use_container_width=True, key="btn_sb_resume", disabled=not can_resume, help="마지막으로 중단된 '동'부터 수집을 재개합니다."):
-                run_engine_cmd(s_city, 99999, resume=True)
+            if st.button("🔄 재가동 (복구)", use_container_width=True, key="btn_sb_recover", help="누락된 지역을 자동으로 찾아서 다시 수집합니다. (이미 잘 된 지역은 건너뜀)"):
+                run_engine_cmd(s_city, 99999, mode="recovery")
             
     st.write("---")
     
@@ -868,73 +936,34 @@ if page == 'Shop Search':
     with m_col:
         h_col1, h_col2, h_col3 = st.columns([1.1, 2.2, 2.8], vertical_alignment="center")
         h_col1.markdown('<p style="font-size:0.85rem; color:#64748b; margin:0;">✦ 수집 데이터 리스트</p>', unsafe_allow_html=True)
-        if st.session_state['last_selected_shop'] is not None or (st.session_state.get('prev_rows') and len(st.session_state['prev_rows']) > 0):
+        
+        # Visibility Logic: Show buttons if selected
+        has_selection = st.session_state['last_selected_shop'] is not None or (st.session_state.get('prev_rows') and len(st.session_state['prev_rows']) > 0)
+        
+        if has_selection:
             with h_col2:
-                c_del, c_res = st.columns([1.2, 1.4])
-                with c_del:
-                    st.markdown('<div class="delete-btn">', unsafe_allow_html=True)
-                    sel_count = len(st.session_state.get('prev_rows', []))
-                    btn_label = f"✕ {sel_count}개 삭제" if sel_count > 1 else "✕ 삭제"
-                    if st.button(btn_label, key="btn_del_shop"):
-                        if sel_count > 1:
-                            shops_to_del = [f_df.iloc[r] for r in st.session_state['prev_rows']]
-                            delete_shops_batch(shops_to_del)
-                        else:
-                            shop_to_del = st.session_state['last_selected_shop']
-                            delete_shop(shop_to_del['ID'], place_link=shop_to_del.get('플레이스링크'), shop_name=shop_to_del.get('상호명'))
-                    st.markdown('</div>', unsafe_allow_html=True)
-                with c_res:
-                    st.markdown('<div class="research-btn">', unsafe_allow_html=True)
-                    sel_rows = st.session_state.get('prev_rows', [])
-                    sel_count = len(sel_rows)
-                    btn_label = f"✦ {sel_count}개 재분석" if sel_count > 1 else "✦ 데이터 재분석"
-                    
-                    if st.button(btn_label, key="btn_res_shop"):
-                        shops_to_process = []
-                        if sel_count > 1:
-                            shops_to_process = [f_df.iloc[r] for r in sel_rows]
-                        else:
-                            shops_to_process = [st.session_state['last_selected_shop']]
-                        
-                        success_overall = True
-                        updated_ids = []
-
-                        with st.spinner(f"{len(shops_to_process)}개 업체 데이터 재분석 중... (크롤링 + 경쟁샵 분석)"):
-                            script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'research_single_shop.py'))
-                            
-                            for shop_info in shops_to_process:
-                                shop_id = shop_info['ID']
-                                updated_ids.append(str(shop_id))
-                                try:
-                                    my_env = os.environ.copy()
-                                    if "firebase" in st.secrets:
-                                        my_env["FIREBASE_SERVICE_ACCOUNT_JSON"] = json.dumps(dict(st.secrets["firebase"]))
-                                    
-                                    subprocess.run(
-                                        [sys.executable, script_path, str(shop_id)], 
-                                        check=True, capture_output=True, text=True, env=my_env,
-                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                                    )
-                                except Exception as e:
-                                    logger.error(f"Error re-searching {shop_id}: {e}")
-                                    success_overall = False
-                            
-                            try:
-                                from extract_competitors import run_competitor_extraction
-                                run_competitor_extraction(target_ids=updated_ids)
-                            except Exception as e:
-                                logger.error(f"Error re-analyzing competitors: {e}")
-                                success_overall = False
-
-                        if success_overall:
-                            st.success(f"{len(shops_to_process)}개 업체 재분석 완료!")
-                            st.cache_data.clear()
-                            st.rerun()
-                        else:
-                            st.warning("일부 업체 분석 중 오류가 발생했습니다.")
-                            st.cache_data.clear()
-                            st.rerun()
-                    st.markdown('</div>', unsafe_allow_html=True)
+                # Merged Button: Delete & Fix Competitors
+                st.markdown('<div class="delete-btn">', unsafe_allow_html=True)
+                
+                sel_rows = st.session_state.get('prev_rows', [])
+                sel_count = len(sel_rows)
+                
+                if sel_count > 1:
+                    btn_label = f"✕ {sel_count}개 삭제 및 경쟁샵 재분석"
+                    btn_key = "btn_del_batch"
+                else:
+                    btn_label = "✕ 삭제 및 경쟁샵 재분석"
+                    btn_key = "btn_del_single"
+                
+                if st.button(btn_label, key=btn_key, help="해당 샵을 삭제하고, 이 샵을 경쟁샵으로 등록해둔 다른 샵들의 정보를 자동으로 수정합니다."):
+                    if sel_count > 1:
+                        shops_to_del = [f_df.iloc[r] for r in sel_rows]
+                        delete_shops_batch_and_reanalyze(shops_to_del)
+                    else:
+                        shop_to_del = st.session_state['last_selected_shop']
+                        delete_shop_and_reanalyze(shop_to_del['ID'], place_link=shop_to_del.get('플레이스링크'), shop_name=shop_to_del.get('상호명'))
+                
+                st.markdown('</div>', unsafe_allow_html=True)
 
         selection = st.dataframe(
             f_df[['상호명', '주소', '번호', '이메일', '인스타', '톡톡링크']].reset_index(drop=True),
