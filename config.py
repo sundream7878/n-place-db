@@ -132,4 +132,5 @@ def get_deep_keywords(target_city: str) -> list:
     return keywords
 
 # DEPRECATED: Standard REGIONS list for dashboard selectbox population
+# Updated to load dynamically from regions.json
 REGIONS_LIST = list(CITY_MAP.keys()) if CITY_MAP else ["서울", "인천", "경기"]

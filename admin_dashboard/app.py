@@ -1,8 +1,13 @@
+import os
+
+# 🛡️ gRPC Stability Fix (Must be at the absolute top for Windows/Threaded envs)
+os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
+os.environ["GRPC_POLL_STRATEGY"] = "poll"
+
 import streamlit as st
 import pandas as pd
 import requests
 import sys
-import os
 import time
 import json
 import subprocess
@@ -17,6 +22,7 @@ logger = logging.getLogger(__name__)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import config
 from messenger.email_sender import send_gmail
+from crawler.db_handler import DBHandler
 
 # --- Helper: Engine Monitoring ---
 ENGINE_PID_FILE = os.path.join(os.getcwd(), "engine.pid")
@@ -44,7 +50,7 @@ def stop_engine():
         except: return False
     return False
 
-def run_engine_cmd(target, count, mode="new"): # mode: "new", "resume", "recovery"
+def run_engine_cmd(target=None, count=None, mode="new"): # mode: "new", "resume", "recovery"
     try:
         my_env = os.environ.copy()
         my_env["PYTHONIOENCODING"] = "utf-8"
@@ -59,13 +65,14 @@ def run_engine_cmd(target, count, mode="new"): # mode: "new", "resume", "recover
         log_f.flush()
         
         if mode == "recovery":
-             # Smart Recovery Script (Currently hardcoded for Seoul/Missing districts)
+             # Smart Recovery Script (Dynamically accepts province)
              script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'engine_recover_missing.py'))
-             args = [sys.executable, script_path]
+             args = [sys.executable, script_path, str(target) if target else "서울"]
         else:
              # Standard Crawler
              script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'step1_refined_crawler.py'))
-             args = [sys.executable, script_path, str(target) if target else "전체", str(count)]
+             run_count = str(count) if count else "999"
+             args = [sys.executable, script_path, str(target) if target else "전체", run_count]
              if mode == "resume": args.append("--resume")
         
         p = subprocess.Popen(
@@ -156,33 +163,47 @@ def load_data():
     mandatory_cols = ["상호명", "주소", "플레이스링크", "번호", "이메일", "인스타", "톡톡링크", "블로그ID"]
     
     # 1. Load from Firebase
-    try:
-        from crawler.db_handler import DBHandler
-        # st.write("DEBUG: Initializing DBHandler...")
-        db = DBHandler()
-        if db.db_fs:
-            with st.spinner("데이터를 불러오는 중입니다..."):
-                # st.write("DEBUG: Streaming documents from Firebase...")
-                docs = db.db_fs.collection(config.FIREBASE_COLLECTION).stream()
-                data_list = []
-                for doc in docs:
-                    d = doc.to_dict()
-                    d['ID'] = doc.id
-                    data_list.append(d)
-                # st.write(f"DEBUG: Successfully loaded {len(data_list)} documents.")
-                if data_list:
-                    f_df = pd.DataFrame(data_list)
-        else:
-            # st.write("DEBUG: db.db_fs is None.")
-            pass
-    except Exception as e:
-        if "logger" in globals():
-            logger.error(f"Firebase 로드 실패: {e}")
-        else:
-            print(f"Firebase 로드 실패: {e}")
-        # Note: 'firebase_admin' might be missing until redeploy finishes
-        if "firebase_admin" in str(e):
-             st.warning("Firebase 모듈을 설치 중입니다. 잠시 후 새로고침 해주세요.")
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            from crawler.db_handler import DBHandler
+            db = DBHandler()
+            if db.db_fs:
+                with st.spinner(f"데이터를 불러오는 중입니다... (시도 {attempt+1}/{max_retries})"):
+                    data_list = []
+                    try:
+                        # Strategy A: Fast Stream
+                        docs = db.db_fs.collection(config.FIREBASE_COLLECTION).stream()
+                        for doc in docs:
+                            d = doc.to_dict()
+                            d['ID'] = doc.id
+                            data_list.append(d)
+                    except Exception as e:
+                        # Strategy B: Robust Get Fallback (Handles '_UnaryStreamMultiCallable' errors)
+                        logger.warning(f"Firebase Stream failed: {e}. Falling back to .get()...")
+                        docs = db.db_fs.collection(config.FIREBASE_COLLECTION).get()
+                        for doc in docs:
+                            d = doc.to_dict()
+                            d['ID'] = doc.id
+                            data_list.append(d)
+                    
+                    if data_list:
+                        f_df = pd.DataFrame(data_list)
+                    break # Success
+            else:
+                if attempt < max_retries - 1:
+                    DBHandler.reset_instance()
+                    time.sleep(1)
+                    continue
+        except Exception as e:
+            logger.error(f"Firebase 로드 실패 (시도 {attempt+1}): {e}")
+            if attempt < max_retries - 1:
+                from crawler.db_handler import DBHandler
+                DBHandler.reset_instance()
+                time.sleep(1)
+            else:
+                if "firebase_admin" in str(e):
+                    st.warning("Firebase 모듈을 확인 중입니다. 잠시 후 새로고침 해주세요.")
 
     # 2. Rename and Normalize Columns
     rename_map = {
@@ -410,35 +431,49 @@ def delete_shops_batch_and_reanalyze(shops_list):
 
 df = load_data()
 
-# --- Sidebar: Crawler Command Center (Moved to Top) ---
+# --- Sidebar: Crawler Command Center ---
 
 with st.sidebar:
-    st.markdown("### 🛰 데이터 수집 엔진")
-    st.caption("네이버 플레이스 실시간 수집")
-    st.write("---")
-    s_city = st.selectbox("수집 지역 (시/도)", ["서울", "인천", "경기", "부산", "대구", "대전", "광주", "울산", "세종", "제주"], key="sb_city")
-    # Removed s_dist and s_count as per user request (Full Collection Mode)
-
-
+    st.markdown("### 🛰 수집 엔진 제어")
+    st.caption("네이버 플레이스 실시간 정보 데이터베이스")
+    st.write("")
     
+    # Load regions dynamically
+    s_province = st.selectbox("수집 지역 (시/도)", config.REGIONS_LIST, key="sb_city")
+    
+    districts = []
+    if s_province in config.CITY_MAP:
+        districts = list(config.CITY_MAP[s_province].keys())
+        districts.sort()
+    
+    s_district = st.selectbox("세부 구역 (구/시/군)", ["전체 지역"] + districts, key="sb_district")
+    
+    if s_district and s_district != "All Districts" and s_district != "전체 지역":
+        s_target = f"{s_province} {s_district}"
+    else:
+        s_target = s_province
+        
+    st.markdown(f"""
+<div style="background: #f1f5f9; padding: 10px; border-radius: 8px; border-left: 4px solid #6366f1; margin-bottom: 20px;">
+    <div style="font-size: 0.7rem; color: #64748b; font-weight: 600; text-transform: uppercase;">선택된 수집 대상</div>
+    <div style="font-size: 0.95rem; font-weight: 700; color: #1e293b; margin-top: 2px;">{s_target}</div>
+</div>""", unsafe_allow_html=True)
+
     # Engine Status UI
     running_pid = get_engine_pid()
     
-    # Progress Parser (Robust)
     def get_crawler_progress():
         if os.path.exists(ENGINE_LOG_FILE):
             try:
                 with open(ENGINE_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
                     lines = f.readlines()
                     
-                    # Find last start index
                     start_idx = 0
                     for i, line in enumerate(reversed(lines)):
                         if "ENGINE NEW RUN" in line or "ENGINE RESUME" in line or "ENGINE SMART RECOVERY" in line:
                             start_idx = len(lines) - 1 - i
                             break
                     
-                    # Search for progress after start_idx
                     for line in reversed(lines[start_idx:]):
                         if "Progress:" in line:
                             parts = line.split("Progress:")[-1].strip().split("/")
@@ -450,84 +485,281 @@ with st.sidebar:
     curr, total = get_crawler_progress()
     
     if running_pid:
-        st.success(f"● 가동 중 (PID: {running_pid})")
+        st.markdown(f"""
+<div style="background: #ecfdf5; padding: 8px 12px; border-radius: 6px; color: #065f46; font-size: 0.85rem; font-weight: 600; margin-bottom: 12px; border: 1px solid #d1fae5;">
+    ● 엔진 가동 중 (PID: {running_pid})
+</div>""", unsafe_allow_html=True)
         
-        # Progress Bar
         if total > 0:
             pct = min(curr / total, 1.0)
-            st.progress(pct, text=f"수집 진행률: {curr}/{total} ({int(pct*100)}%)")
+            st.progress(pct, text=f"수집 진행률: {curr}/{total}")
         else:
-            st.info("수집 시작 준비 중...")
+            st.info("크롤러 초기화 중...")
             
-        if st.button("🛑 엔진 강제 정지", use_container_width=True, key="btn_sb_stop"):
+        if st.button("🛑 엔진 정지", use_container_width=True, key="btn_sb_stop"):
             if stop_engine():
-                st.toast("엔진을 정지시켰습니다.")
+                st.toast("엔진이 정지되었습니다.")
                 st.rerun()
         
-        # Auto-refresh for real-time progress
-        time.sleep(2)
-        if curr % 5 == 0: # Periodically clear data cache during run to update stats
-            st.cache_data.clear()
-        st.rerun()
+        st.write("")
+        if st.checkbox("진행상황 자동 갱신", value=True, key="chk_auto_refresh"):
+            time.sleep(5)
+            st.rerun()
             
     else:
-        if not (total > 0 and curr >= total):
-            st.error("○ 엔진 정지")
+        st.markdown(f"""
+<div style="background: #f8fafc; padding: 8px 12px; border-radius: 6px; color: #64748b; font-size: 0.85rem; font-weight: 600; margin-bottom: 12px; border: 1px solid #e2e8f0;">
+    ○ 엔진 대기 상태
+</div>""", unsafe_allow_html=True)
         
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("✦ 엔진 가동", type="primary", use_container_width=True, key="btn_sb_run"):
-                run_engine_cmd(s_city, 99999, mode="new")
-        with c2:
-            if st.button("🔄 재가동 (복구)", use_container_width=True, key="btn_sb_recover", help="누락된 지역을 자동으로 찾아서 다시 수집합니다. (이미 잘 된 지역은 건너뜀)"):
-                run_engine_cmd(s_city, 99999, mode="recovery")
+        if st.button("데이터 수집 시작", type="primary", use_container_width=True, key="btn_sb_run"):
+            run_engine_cmd(s_target, 99999, mode="new")
+
+    with st.expander("시스템 관리 및 분석", expanded=False):
+        col_sys1, col_sys2 = st.columns(2)
+        with col_sys1:
+            # RECOVERY MODE
+            if st.button("🔄 정밀 복구 (누락 방지)", key="btn_resume_recovery", help="선택한 광역 단위(예: 부산)의 모든 동을 전수 조사하여 누락된 구역을 자동으로 수집합니다."):
+                run_engine_cmd(target=s_target, mode="recovery")
             
-    st.write("---")
-    
-    # --- Debug: Live Engine Logs ---
-    with st.expander("📝 실시간 엔진 로그", expanded=False):
-        if os.path.exists(ENGINE_LOG_FILE):
+            if st.button("▶ 일반 재개 (이어서 수집)", key="btn_resume_simple", help="마지막으로 멈췄던 지점부터 즉시 수집을 재개합니다."):
+                run_engine_cmd(target=s_target, mode="resume")
+        with col_sys2:
+            # MANUAL COMPETITOR ANALYSIS
+            if st.button("📊 경쟁샵 전체 분석", key="btn_run_analysis", help="현재 수집된 모든 샵의 위치를 계산하여 경쟁샵 리스트를 최신화합니다. (크롤링 완료 후 실행 권장)"):
+                with st.spinner("전체 데이터에 대한 경쟁샵 분석을 시작합니다... (수 분 소요됨)"):
+                    try:
+                        from extract_competitors import run_competitor_extraction
+                        run_competitor_extraction()
+                        st.success("경쟁샵 분석이 완료되었습니다! 데이터가 최신화되었습니다.")
+                        time.sleep(2)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"분석 실패: {e}")
+
+        st.info(f"현재 상태: {st.session_state.get('crawler_status', '대기 중')}")
+        
+        # --- MANUAL CLOUD SYNC SECTION ---
+        st.write("---")
+        st.markdown("**📁 데이터 동기화 관리**")
+        local_cache_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'crawled_shops_local.json'))
+        
+        if os.path.exists(local_cache_path):
             try:
-                with open(ENGINE_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
-                    log_tail = f.readlines()[-15:] # Show last 15 lines
-                    st.code("".join(log_tail), language="text")
-            except:
-                st.caption("로그를 읽을 수 없습니다.")
+                with open(local_cache_path, "r", encoding="utf-8") as f:
+                    local_data = json.load(f)
+                count = len(local_data)
+                st.success(f"현재 저장된 로컬 데이터: **{count}개**")
+                
+                col_sync1, col_sync2 = st.columns(2)
+                with col_sync1:
+                    if st.button("☁️ 클라우드로 즉시 업로드", key="btn_manual_sync", type="primary", use_container_width=True, help="로컬에 저장된 데이터를 파이어베이스 DB로 한 번에 전송합니다."):
+                        with st.spinner("동기화 중..."):
+                            db = DBHandler()
+                            uploaded = db.batch_insert_shops(local_data)
+                            st.success(f"✅ 동기화 완료! {uploaded}개의 데이터가 업로드되었습니다.")
+                            time.sleep(1)
+                            st.rerun()
+                with col_sync2:
+                    if st.button("🗑️ 로컬 캐시 초기화", key="btn_clear_cache", use_container_width=True, help="데이터가 중복 업로드되는 것을 방지하기 위해 로컬 파일을 안전하게 백업 및 삭제합니다."):
+                        backup_path = local_cache_path + f".bak_{int(time.time())}"
+                        os.rename(local_cache_path, backup_path)
+                        st.info("로컬 데이터가 백업 및 삭제되었습니다.")
+                        time.sleep(1)
+                        st.rerun()
+            except Exception as e:
+                st.error(f"데이터 파일 읽기 실패: {e}")
         else:
-            st.caption("로그 파일이 없습니다.")
+            st.info("현재 동기화 대기 중인 로컬 데이터가 없습니다.")
+
             
     st.write("---")
     
-    # --- Data Statistics Summary ---
-    st.markdown("### 📊 수집 현황 요약")
+    st.write("---")
+    
+    # --- 데이터 수집 요약 섹션 ---
+    st.markdown('<div style="font-size: 1.15rem; font-weight: 700; color: #0f172a; margin-bottom: 12px;">📊 수집 현황 요약</div>', unsafe_allow_html=True)
+    
+    # --- Dashboard UI Enhancements (Premium Styling) ---
+    st.markdown("""
+        <style>
+        .main { background-color: #fcfcfd; }
+        .stButton>button {
+            border-radius: 8px;
+            font-weight: 600;
+            padding: 0.5rem 1rem;
+            transition: all 0.2s;
+        }
+        .stButton>button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+        .stat-card {
+            background-color: white;
+            padding: 1.25rem;
+            border-radius: 12px;
+            border: 1px solid #eef2f6;
+            box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.05);
+            text-align: left;
+        }
+        .stat-label {
+            font-size: 0.8rem;
+            color: #64748b;
+            font-weight: 500;
+            margin-bottom: 0.25rem;
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
+        }
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        .live-indicator {
+            display: inline-flex;
+            align-items: center;
+            font-size: 0.75rem;
+            color: #10b981;
+            font-weight: 600;
+        }
+        .live-dot {
+            height: 6px;
+            width: 6px;
+            background-color: #10b981;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 6px;
+            animation: pulse-green 2s infinite;
+        }
+        @keyframes pulse-green {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # 실시간 모니터링 한 줄 정렬 (여백 활용)
+    col_stat_title, col_empty, col_stat_toggle = st.columns([1.5, 1, 1.2])
+    with col_stat_title:
+        st.markdown('<div style="font-size: 0.85rem; font-weight: 600; color: #64748b; margin-top: 10px; width: 200px;">데이터베이스 수집 현황</div>', unsafe_allow_html=True)
+    with col_stat_toggle:
+        live_mode = st.toggle("실시간 모니터링", value=False, key="live_mon_toggle_final")
+    
+    stats_placeholder = st.empty()
+
+    # Optimized Stats Fetching
+    @st.cache_resource
+    def get_db_handler():
+        return DBHandler()
+
+    db = get_db_handler()
+    
+    def render_elegant_stats(metrics, is_live=True):
+        cards_html = ""
+        for i, (label, count, color) in enumerate(metrics):
+            # Highlight the first card (National Total)
+            bg_style = "background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);" if i == 0 else "background: white;"
+            label_color = "rgba(255,255,255,0.8)" if i == 0 else "#64748b"
+            value_color = "white" if i == 0 else "#0f172a"
+            border_style = "border: none;" if i == 0 else "border: 1px solid #eef2f6;"
+            
+            cards_html += f"""
+<div style="padding: 1.25rem; border-radius: 12px; {bg_style} {border_style} box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
+    <div style="font-size: 0.75rem; font-weight: 600; color: {label_color}; text-transform: uppercase;">{label}</div>
+    <div style="font-size: 1.75rem; font-weight: 700; color: {value_color}; margin-top: 0.25rem;">{count:,}</div>
+</div>"""
+
+        status_html = f'<div class="live-indicator"><span class="live-dot"></span>실시간 수신 중</div>' if is_live else '<div style="font-size:0.75rem; color:#94a3b8; font-weight:600;">○ 정적 데이터 모드</div>'
+
+        return f"""
+<div style="margin-bottom: 24px;">
+    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px;">
+        <div style="font-size: 0.9rem; font-weight: 600; color: #64748b;">DATABASE SUMMARY</div>
+        {status_html}
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;">
+        {cards_html}
+    </div>
+    <div style="margin-top: 8px; text-align: right; font-size: 0.70rem; color: #94a3b8;">최종 업데이트: {time.strftime('%H:%M:%S')}</div>
+</div>"""
+
+    # Dynamic Region Monitoring
+    def get_top_regions(dataframe, current_sel):
+        if dataframe.empty:
+            return ["서울", "경기", "인천"]
+        
+        # Calculate counts per region from '주소' column
+        temp_df = dataframe.copy()
+        temp_df['region_key'] = temp_df['주소'].apply(lambda x: x.split()[0] if isinstance(x, str) and x.strip() else "기타")
+        counts = temp_df['region_key'].value_counts()
+        
+        top_list = counts.head(5).index.tolist()
+        
+        # Ensure selected province is in the list
+        if current_sel != "전체" and current_sel not in top_list:
+            top_list = [current_sel] + top_list[:4]
+        
+        return top_list
+
+    target_regions = get_top_regions(df, s_province)
+    l_prov = 0
+
+    if live_mode:
+        try:
+            while True:
+                metrics = []
+                total = db.get_doc_count()
+                metrics.append(("전국 전체 합계", total, "indigo"))
+                for reg in target_regions:
+                    c = db.get_doc_count(reg)
+                    if reg == s_province: l_prov = c
+                    metrics.append((f"{reg} 지역 현황", c, "slate"))
+                
+                stats_placeholder.markdown(render_elegant_stats(metrics[:6], True), unsafe_allow_html=True)
+                time.sleep(5)
+        except: pass
+    else:
+        # Optimization: Use loaded DataFrame for static view
+        try:
+            total = len(df)
+            metrics = [("전국 전체 합계", total, "indigo")]
+            
+            temp_df = df.copy()
+            temp_df['region_key'] = temp_df['주소'].apply(lambda x: x.split()[0] if isinstance(x, str) and x.strip() else "기타")
+            counts = temp_df['region_key'].value_counts()
+            
+            for reg in target_regions:
+                c = int(counts.get(reg, 0))
+                if reg == s_province: l_prov = c
+                metrics.append((f"{reg} 지역 현황", c, "slate"))
+                
+            stats_placeholder.markdown(render_elegant_stats(metrics[:6], False), unsafe_allow_html=True)
+        except: pass
+
+    # Clean Detailed Distribution
     if not df.empty:
-        # Extract City and District from address
         temp_df = df.copy()
         temp_df['city_stat'] = temp_df['주소'].apply(lambda x: x.split()[0] if isinstance(x, str) and x.strip() else "기타")
-        temp_df['dist_stat'] = temp_df['주소'].apply(lambda x: x.split()[1] if isinstance(x, str) and len(x.split()) > 1 else "")
+        city_data = temp_df[temp_df['city_stat'] == s_province]
         
-        # Filter by selected city
-        city_data = temp_df[temp_df['city_stat'] == s_city]
-        total_in_city = len(city_data)
+        st.markdown(f"#### 📍 {s_province} 상세 분포")
         
-        st.write(f"**{s_city} 전체:** {total_in_city}개")
-        
-        if total_in_city > 0:
-            dist_counts = city_data.groupby('dist_stat').size().reset_index(name='count').sort_values('count', ascending=False)
+        if not city_data.empty:
+            dist_counts = city_data.groupby(city_data['주소'].apply(lambda x: x.split()[1] if isinstance(x, str) and len(x.split()) > 1 else "상세불명")).size().reset_index(name='count').sort_values('count', ascending=False)
             
-            # Show as a scrollable component if many districts
-            with st.container(height=250):
+            with st.container(height=280, border=True):
                 for _, row in dist_counts.iterrows():
-                    d_name = row['dist_stat'] if row['dist_stat'] else "상세불명"
+                    d_name = row.iloc[0]
                     st.markdown(f"""
-                    <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #f8fafc;">
-                        <span style="font-size: 0.85rem; color: #1e293b;">{d_name}</span>
-                        <span style="font-size: 0.85rem; font-weight: 700; color: #9d7dfa;">{row['count']}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
+<div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #f8fafc;">
+    <span style="font-size: 0.9rem; font-weight: 500; color: #475569;">{d_name}</span>
+    <span style="background: #f1f5f9; padding: 2px 8px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; color: #6366f1;">{row['count']} 개</span>
+</div>""", unsafe_allow_html=True)
         else:
-            st.caption("수집된 데이터가 없습니다.")
-        st.caption("데이터베이스가 비어있습니다.")
+            st.info(f"현재 뷰에서 {s_province}에 대한 상세 데이터가 없습니다.")
+
+    
     
     st.write("---")
 
