@@ -1,0 +1,16 @@
+{
+  "min_delay": 27,
+  "max_delay": 55,
+  "inter_keyword_min": 40,
+  "inter_keyword_max": 82,
+  "keyword": "떡볶이",
+  "exclude": "",
+  "provinces": [
+    "인천"
+  ],
+  "districts": [
+    "[인천] 서구"
+  ],
+  "filter_mode_ui": "전체(상호/업종/메뉴 포함)",
+  "filter_keyword": ""
+}

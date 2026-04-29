@@ -28,7 +28,7 @@ async def download_session(platform):
     """Download session from Supabase and extract to USER_DATA_DIR."""
     state_path = os.path.join(USER_DATA_DIR, f"{platform}_state.json")
     
-    if db:
+    if db and hasattr(db, 'load_session'):
         try:
             session_json = db.load_session(platform)
             if session_json:
@@ -51,11 +51,12 @@ async def download_session(platform):
 
 async def upload_session(page, platform):
     """Save current browser state to Supabase."""
-    if not db: return
+    os.makedirs(USER_DATA_DIR, exist_ok=True)
     state_path = os.path.join(USER_DATA_DIR, f"{platform}_state.json")
     await page.context.storage_state(path=state_path)
-    with open(state_path, 'r', encoding='utf-8') as f:
-        db.save_session(platform, f.read())
+    if db and hasattr(db, 'save_session'):
+        with open(state_path, 'r', encoding='utf-8') as f:
+            db.save_session(platform, f.read())
 
 async def human_delay(min_sec=2, max_sec=5):
     """Realistic human-like delay."""
@@ -100,10 +101,12 @@ async def send_instagram_dm(page, insta_url, message, image_path=None):
     """Automates sending an Instagram DM with robust pop-up handling and optional image."""
     logger.info(f"Opening Instagram Target: {insta_url}")
     try:
-        await page.goto(insta_url, wait_until="networkidle", timeout=60000)
+        # domcontentloaded is faster and less prone to background noise than networkidle
+        await page.goto(insta_url, wait_until="domcontentloaded", timeout=45000)
     except Exception as e:
-        logger.error(f"Failed to load Instagram profile: {e}")
-        return False
+        logger.warning(f"Initial navigation to {insta_url} slow, attempting to proceed anyway: {e}")
+        # If it failed to load completely in 45s, it might still have enough content to find the button
+
         
     await human_delay(4, 7)
     
@@ -130,17 +133,19 @@ async def send_instagram_dm(page, insta_url, message, image_path=None):
 
     # 1. Click "Message" button on profile
     msg_btn_selectors = [
+        "//div[@role='button' and (text()='Message' or text()='메시지 보내기')]",
+        "//button[text()='Message' or text()='메시지 보내기']",
         "div[role='button']:has-text('메시지 보내기')",
         "button:has-text('Message')",
         "div[role='button']:has-text('Message')",
         "button:has-text('메시지 보내기')",
         "[aria-label='Message']",
         "[aria-label='메시지 보내기']",
-        "//div[@role='button' and (text()='Message' or text()='메시지 보내기')]",
-        "//button[contains(., 'Message') or contains(., '메시지 보내기')]",
-        "a:has-text('Message')", # New: Links sometimes act as buttons
-        "a:has-text('메시지 보내기')"
+        "a:has-text('Message')", 
+        "a:has-text('메시지 보내기')",
+        "div._ab8w._ab94._ab99._ab9f._ab9m._ab9p._ab9-._aba8._abcm button" # specific class chain fallback
     ]
+
     
     msg_btn = None
     for selector in msg_btn_selectors:
@@ -228,8 +233,10 @@ async def send_instagram_dm(page, insta_url, message, image_path=None):
             "textarea[placeholder*='메시지']",
             "textarea[placeholder*='Message']",
             "div[aria-placeholder*='메시지']",
-            "div[aria-placeholder*='Message']"
+            "div[aria-placeholder*='Message']",
+            "div.xat24cr.xdj266r.xdpx789" # Dynamic class fallback
         ]
+
         
         chat_input = None
         for selector in chat_input_selectors:
@@ -250,10 +257,24 @@ async def send_instagram_dm(page, insta_url, message, image_path=None):
                 await slow_type(chat_input, message)
                 await human_delay(1, 2)
                 
-                # 3. Send message (Enter key is standard)
+                # 3. Send message 
                 logger.info("Sending message (Pressing Enter)...")
                 await chat_input.press("Enter")
+                await human_delay(1, 2)
+                
+                # Check for an explicit "Send" button and click it if it remains
+                send_button_selectors = ["button:has-text('Send')", "button:has-text('보내기')", "//div[text()='Send']", "//div[text()='보내기']"]
+                for s_sel in send_button_selectors:
+                    try:
+                        s_btn = page.locator(s_sel).first
+                        if await s_btn.count() > 0 and await s_btn.is_visible():
+                            logger.info(f"Clicking explicit Send button: {s_sel}")
+                            await s_btn.click()
+                            break
+                    except: pass
+                
                 await human_delay(2, 4)
+
                 
                 # --- IMAGE UPLOAD ---
                 if image_path and os.path.exists(image_path):
@@ -297,44 +318,85 @@ async def login_instagram(page, username, password):
     """Handles Instagram login with intelligent session check."""
     logger.info("Checking Instagram login status... (PLEASE DO NOT CLOSE THE BROWSER WINDOW)")
     try:
-        # Check homepage first to see if we're already in
-        await page.goto("https://www.instagram.com/", wait_until="networkidle", timeout=60000)
+        # Check homepage
+        await page.goto("https://www.instagram.com/", wait_until="domcontentloaded", timeout=60000)
         await human_delay(3, 5)
+
         
-        # If we see a login form, we need to log in
+        # --- PHASE 1: Determine initial state ---
+        # We look for definite signs of being logged in vs logged out
+        logged_in_indicators = ["svg[aria-label='Home']", "svg[aria-label='홈']", "svg[aria-label='Search']", "svg[aria-label='검색']"]
+        login_form_indicators = ["input[name='username']", "button:has-text('Log in')", "button:has-text('로그인')"]
+        
+        is_logged_in = False
+        is_at_login_form = False
+        
+        # Wait up to 10 seconds to see which one appears first
+        for _ in range(5):
+            for sel in logged_in_indicators:
+                if await page.locator(sel).count() > 0:
+                    is_logged_in = True
+                    break
+            if is_logged_in: break
+            
+            for sel in login_form_indicators:
+                if await page.locator(sel).count() > 0:
+                    is_at_login_form = True
+                    break
+            if is_at_login_form: break
+            await asyncio.sleep(2)
+
+        # --- PHASE 2: Action based on state ---
+        if is_logged_in:
+            logger.info("Instagram session VALID. Already logged in.")
+            return True
+            
+        logger.info("Instagram login REQUIRED. Waiting for user or attempting auto-fill...")
+        
+        # Try auto-fill if we see the fields
         if await page.locator("input[name='username']").count() > 0:
-            logger.info("Instagram session expired or not found. Attempting login...")
-            await page.locator("input[name='username']").fill(username)
-            await page.locator("input[name='password']").fill(password)
-            await page.locator("button[type='submit']").click()
-            await human_delay(10, 15) # Wait for potential OTP or dashboard
+            try:
+                await page.locator("input[name='username']").fill(username)
+                await page.locator("input[name='password']").fill(password)
+                await page.locator("button[type='submit']").click()
+                logger.info("Auto-fill attempted. Waiting for you to complete any challenges...")
+            except: pass
+
+        # --- PHASE 3: Continuous Detection Loop (User takes over) ---
+        logger.info(">>> PLEASE FINISH LOGIN IN THE BROWSER WINDOW. Waiting for success detection (3m)...")
+        
+        login_detected = False
+        for i in range(36): # 180 seconds
+            await asyncio.sleep(5)
+            # Check for logged-in indicators again
+            for sel in logged_in_indicators:
+                if await page.locator(sel).count() > 0:
+                    login_detected = True
+                    break
+            if login_detected:
+                logger.info("Instagram login SUCCESS detected via user action!")
+                break
             
-            # Check success
-            if "login" in page.url or await page.locator("input[name='username']").count() > 0:
-                logger.warning("Instagram login failed or needs verification.")
-                return False
+            if i % 6 == 0 and i > 0:
+                logger.info(f"Waiting for login... ({i*5}s elapsed)")
+
+        if not login_detected:
+            logger.error("Login TIMEOUT. Flow aborted.")
+            return False
             
-            # --- Handling Post-Login Pop-ups ('Save Info', 'Notifications') ---
-            logger.info("Handling post-login pop-ups...")
-            post_login_selectors = [
-                 "//button[text()='Save Info']", "//button[text()='정보 저장']",
-                 "//button[text()='Not Now']", "//button[text()='나중에 하기']",
-                 "button._a9--._ap3a._aade"
-            ]
-            for _ in range(3):
-                for selector in post_login_selectors:
-                    try:
-                        loc = page.locator(selector).first
-                        if await loc.count() > 0 and await loc.is_visible():
-                            logger.info(f"Clicking post-login button: {selector}")
-                            await loc.click()
-                            await human_delay(2, 4)
-                    except: continue
-            
-            logger.info("Instagram login successful!")
-        else:
-            logger.info("Already logged in to Instagram. Proceeding to target.")
-            
+        # Post-login cleanup
+        logger.info("Login confirmed. Cleaning up pop-ups...")
+        await human_delay(3, 5)
+        # Handle "Save Info" etc.
+        for _ in range(2):
+            for sel in ["//button[text()='Save Info']", "//button[text()='정보 저장']", "//button[text()='Not Now']", "//button[text()='나중에 하기']"]:
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0 and await loc.is_visible():
+                        await loc.click()
+                        await human_delay(1, 2)
+                except: pass
+        
         return True
     except Exception as e:
         logger.error(f"Error during Instagram login check: {e}")
