@@ -17,13 +17,27 @@ Thumbs.db
 
 # Sessions & Data
 browser_session/
+data/
 *.log
 !engine.log
 !messenger.log
-crawled_shops_full.json
-debug_search_results.png
-naver_block_detected.png
+*.json
+!admin_dashboard/templates.json
+!crawler/regions.json
+!package.json
+*.csv
+*.sqlite
+*.png
+!assets/MarketingMonster_logo.png
+
 
 # Firebase Key (SENSITIVE)
 firebase_key.json
 write_key.py
+
+# Build and Distribution
+dist/
+build/
+*.exe
+*.zip
+*.spec

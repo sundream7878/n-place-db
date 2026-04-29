@@ -1,208 +1,112 @@
-import logging
-import os
-import requests
-from supabase import create_client, Client
 import firebase_admin
 from firebase_admin import credentials, firestore
-from typing import Dict, List, Optional
-
-# 🛡️ gRPC Stability Fix for Streamlit/Threaded envs
-os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
-os.environ["GRPC_POLL_STRATEGY"] = "poll"
-
-try:
-    from .. import config
-except ImportError:
-    import sys
-    import os
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    import config
+from datetime import datetime
+import config
+from typing import List, Dict, Optional
+import os
+import logging
 
 logger = logging.getLogger(__name__)
 
 class DBHandler:
     _instance = None
-
+    
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(DBHandler, cls).__new__(cls)
-            cls._instance.initialized = False
+            cls._instance.db_fs = None
+            cls._instance.init_firebase()
         return cls._instance
 
     @classmethod
     def reset_instance(cls):
-        """Allows resetting the Singleton instance if communication failure is detected."""
         cls._instance = None
-        logger.warning("DBHandler instance has been reset.")
 
-    def __init__(self):
-        if self.initialized: return
-        self.db_fs = None # Firestore Client
-        self.init_firebase()
-        self.initialized = True
-        
     def init_firebase(self):
-        """Initialize Firebase Admin SDK."""
         try:
             if not firebase_admin._apps:
-                # config.FIREBASE_SERVICE_ACCOUNT can be a dict (from secrets) or a string (file path)
-                cred_info = config.FIREBASE_SERVICE_ACCOUNT
-                
-                # If it's a dict, use it directly. If it's a string, treat it as a path.
-                if isinstance(cred_info, str):
-                    if not os.path.exists(cred_info):
-                        logger.warning(f"Firebase key file not found at {cred_info}. Skipping initialization.")
-                        return
-                    cred = credentials.Certificate(cred_info)
+                # Handle different types of service account info (dict or path)
+                if isinstance(config.FIREBASE_SERVICE_ACCOUNT, dict):
+                    cred = credentials.Certificate(config.FIREBASE_SERVICE_ACCOUNT)
+                elif isinstance(config.FIREBASE_SERVICE_ACCOUNT, str) and os.path.exists(config.FIREBASE_SERVICE_ACCOUNT):
+                    cred = credentials.Certificate(config.FIREBASE_SERVICE_ACCOUNT)
                 else:
-                    cred = credentials.Certificate(cred_info)
+                    logger.warning("Firebase service account not configured correctly.")
+                    return
                 
                 firebase_admin.initialize_app(cred)
-            self.db_fs = firestore.client()
-            self.init_error = None
-            logger.info("Firebase Firestore initialized successfully")
-        except Exception as e:
-            logger.error(f"Firebase initialization failed: {e}")
-            self.db_fs = None
-            self.init_error = str(e)
             
+            self.db_fs = firestore.client()
+            logger.info("Firebase Firestore initialized successfully.")
+        except Exception as e:
+            logger.error(f"Firebase Init Error: {e}")
+            self.db_fs = None
+
     def insert_shop(self, data: Dict) -> bool:
-        """Insert or update shop in Firebase Firestore."""
-        if not self.db_fs:
-            return False
+        if not self.db_fs: return False
         try:
-            doc_id = self._generate_doc_id(data)
+            doc_id = data.get('source_link') or data.get('detail_url')
             if not doc_id: return False
             
-            self.db_fs.collection(config.FIREBASE_COLLECTION).document(doc_id).set(data, merge=True)
-            logger.info(f"Successfully saved shop to Firebase: {data.get('name') or data.get('상호명')}")
+            # Clean document ID for Firestore
+            safe_id = doc_id.replace("/", "_").replace(".", "_")
+            
+            self.db_fs.collection(config.FIREBASE_COLLECTION).document(safe_id).set(data, merge=True)
             return True
         except Exception as e:
-            logger.error(f"Error saving shop to Firebase: {e}")
+            logger.error(f"Firestore Insert Error: {e}")
             return False
 
-    def _generate_doc_id(self, data: Dict) -> Optional[str]:
-        """Generate a sanitized document ID from shop data."""
-        key = data.get("detail_url") or data.get("source_link") or data.get("blog_url") or data.get("플레이스링크")
-        if not key: return None
-        return str(key).replace("/", "_").replace(":", "_").replace("?", "_").replace("&", "_")
-
-    def batch_insert_shops(self, data_list: List[Dict]) -> int:
-        """
-        Uploads multiple shops to Firebase using WriteBatch for efficiency.
-        Automatically handles chunking (500 limit).
-        """
-        if not self.db_fs or not data_list:
-            return 0
-            
-        total_uploaded = 0
-        batch_size = 500
-        
-        for i in range(0, len(data_list), batch_size):
-            chunk = data_list[i : i + batch_size]
+    def batch_insert_shops(self, shops_list: List[Dict]) -> int:
+        if not self.db_fs or not shops_list: return 0
+        try:
             batch = self.db_fs.batch()
-            
-            chunk_count = 0
-            for item in chunk:
-                doc_id = self._generate_doc_id(item)
+            count = 0
+            for shop in shops_list:
+                doc_id = shop.get('source_link') or shop.get('detail_url')
                 if not doc_id: continue
                 
-                doc_ref = self.db_fs.collection(config.FIREBASE_COLLECTION).document(doc_id)
-                batch.set(doc_ref, item, merge=True)
-                chunk_count += 1
-            
-            try:
-                batch.commit()
-                total_uploaded += chunk_count
-                logger.info(f"🚀 Batch committed: {chunk_count} shops. (Total: {total_uploaded})")
-            except Exception as e:
-                logger.error(f"❌ Batch commit failed: {e}")
+                safe_id = doc_id.replace("/", "_").replace(".", "_")
+                doc_ref = self.db_fs.collection(config.FIREBASE_COLLECTION).document(safe_id)
+                batch.set(doc_ref, shop, merge=True)
+                count += 1
                 
-        return total_uploaded
-
-    def insert_shop_fs(self, data: Dict) -> bool:
-        """Alias for backward compatibility."""
-        return self.insert_shop(data)
-
-    def insert_lead(self, data: Dict) -> bool:
-        """Alias for lead insertion."""
-        return self.insert_shop(data)
-
-    def insert_lead_fs(self, data: Dict) -> bool:
-        """Alias for lead insertion."""
-        return self.insert_shop(data)
-
-    def fetch_existing_urls(self) -> List[str]:
-        """Fetch existing shop URLs from Firebase."""
-        if not self.db_fs:
-                return []
-        try:
-            docs = self.db_fs.collection(config.FIREBASE_COLLECTION).stream()
-            urls = []
-            for doc in docs:
-                d = doc.to_dict()
-                url = d.get("detail_url") or d.get("source_link") or d.get("blog_url") or d.get("플레이스링크")
-                if url: urls.append(url)
-            return urls
+                if count % 400 == 0: # Firestore batch limit is 500
+                    batch.commit()
+                    batch = self.db_fs.batch()
+            
+            batch.commit()
+            return count
         except Exception as e:
-            logger.error(f"Error fetching URLs: {e}")
-            return []
+            logger.error(f"Firestore Batch Error: {e}")
+            return 0
 
-    def save_session(self, platform: str, session_data: str) -> bool:
-        """Save browser session data to Firebase."""
-        if not self.db_fs:
-            return False
-        try:
-            data = {
-                "platform": platform,
-                "session_json": session_data,
-                "updated_at": firestore.SERVER_TIMESTAMP
-            }
-            self.db_fs.collection(config.FIREBASE_SESSION_COLLECTION).document(platform).set(data)
-            logger.info(f"Saved session for {platform} to Firebase")
-            return True
-        except Exception as e:
-            logger.error(f"Error saving session to Firebase: {e}")
-            return False
-
-    def save_session_fs(self, platform: str, session_data: str) -> bool:
-        return self.save_session(platform, session_data)
-
-    def load_session(self, platform: str) -> Optional[str]:
-        """Load browser session data from Firebase."""
-        if not self.db_fs:
-            return None
-        try:
-            doc = self.db_fs.collection(config.FIREBASE_SESSION_COLLECTION).document(platform).get()
-            if doc.exists:
-                return doc.to_dict().get('session_json')
-            return None
-        except Exception as e:
-            logger.error(f"Error loading session: {e}")
-            return None
-
-    def get_doc_count(self, province: str = None) -> int:
-        """
-        Get real-time document count using Aggregation Query (Cost-Effective).
-        If province is provided, filters by address prefix.
-        """
+    def get_doc_count(self, region: Optional[str] = None) -> int:
         if not self.db_fs: return 0
         try:
-            coll = self.db_fs.collection(config.FIREBASE_COLLECTION)
-            
-            if province and province != "전체":
-                from google.cloud.firestore_v1.base_query import FieldFilter
-                # Prefix query for address using FieldFilter to avoid warnings
-                query = coll.where(filter=FieldFilter("address", ">=", province)) \
-                            .where(filter=FieldFilter("address", "<=", province + "\uf8ff"))
-                count_query = query.count()
+            query = self.db_fs.collection(config.FIREBASE_COLLECTION)
+            if region:
+                # Simple prefix search for region in address
+                # Firestore doesn't support 'contains' well without specialized indexing, 
+                # but 'address >= region' and 'address < region + \uf8ff' works for prefix.
+                # However, for the dashboard stats, we usually use a simpler approach if possible.
+                # Here we just fetch count of docs where region is in address (approximate)
+                docs = query.where("address", ">=", region).where("address", "<", region + "\uf8ff").get()
+                return len(docs)
             else:
-                count_query = coll.count()
-            
-            results = count_query.get()
-            # result[0][0].value is standard for some versions, but let's be robust
-            return int(results[0][0].value)
+                # Count aggregate is faster in newer firebase-admin but let's be safe
+                docs = query.list_documents()
+                # list_documents returns an iterator, we can't get len() directly easily without count()
+                return len(list(docs))
         except Exception as e:
-            # Fallback for old SDK versions or index errors
-            # logger.warning(f"Aggregation failed ({e}). usage fallback stream count...")
+            logger.error(f"Firestore Count Error: {e}")
             return 0
+
+    def fetch_existing_urls(self) -> List[str]:
+        if not self.db_fs: return []
+        try:
+            docs = self.db_fs.collection(config.FIREBASE_COLLECTION).select(['source_link']).stream()
+            return [doc.to_dict().get('source_link') for doc in docs if doc.to_dict().get('source_link')]
+        except Exception as e:
+            logger.error(f"Firestore Fetch URLs Error: {e}")
+            return []

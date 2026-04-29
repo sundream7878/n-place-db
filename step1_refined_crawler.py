@@ -10,19 +10,35 @@ import re
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 import config
-from crawler.db_handler import DBHandler
+from crawler.local_db_handler import LocalDBHandler
 import time
 from datetime import datetime
 
+# [MODIFIED] Force stdout encoding to UTF-8 to prevent garbled text in dashboard
+if sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
 # Setup Logging
+# [NEW] Clear log file securely BEFORE attaching handlers
+try:
+    if os.path.exists(config.ENGINE_LOG_FILE):
+        open(config.ENGINE_LOG_FILE, 'w').close()
+except: pass
+
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("crawler_place.log", encoding='utf-8'),
+        # [NEW] Add delay=False and use a custom flush or just standard FileHandler
+        # We will manually flush important logs if needed, or use a handler that auto-flushes.
+        logging.FileHandler(config.ENGINE_LOG_FILE, encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
+# Force flush on FileHandler to ensure real-time dashboard updates
+for handler in logging.getLogger().handlers:
+    if isinstance(handler, logging.FileHandler):
+        handler.flush = lambda h=handler: h.stream.flush() if h.stream else None
+
 logger = logging.getLogger(__name__)
 
 # Config
@@ -47,6 +63,11 @@ def save_to_db(shop_data):
     Final sync happens at the end of the crawl.
     """
     try:
+        # Save to SQLite
+        db = LocalDBHandler(config.LOCAL_DB_PATH)
+        db.insert_shop(shop_data)
+        
+        # Keep local JSON as backup if needed, but primarily use SQLite
         data_list = []
         if os.path.exists(LOCAL_CACHE_FILE):
             with open(LOCAL_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -62,10 +83,10 @@ def save_to_db(shop_data):
         with open(LOCAL_CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(data_list, f, ensure_ascii=False, indent=2)
             
-        logger.info(f"💾 Locally Cached: {shop_data.get('name')}")
+        logger.info(f"💾 Saved to SQLite: {shop_data.get('name')}")
         return True
     except Exception as e:
-        logger.error(f"❌ Local cache failed: {e}")
+        logger.error(f"❌ DB save failed: {e}")
         return False
 
 async def extract_detail_info(page, shop_data):
@@ -106,6 +127,12 @@ async def extract_detail_info(page, shop_data):
                     # TalkTalk
                     if "talktalkUrl" in val and val["talktalkUrl"]:
                         shop_data["talk_url"] = val["talktalkUrl"].strip()
+                    
+                    # Category (for filtering)
+                    if "category" in val and val["category"]:
+                        shop_data["category"] = val["category"]
+                    elif "categoryName" in val and val["categoryName"]:
+                        shop_data["category"] = val["categoryName"]
                 
                 # Extract SNS Links from homepages section
                 if "homepages" in val and val["homepages"]:
@@ -216,43 +243,86 @@ async def install_playwright_browsers():
     except Exception as e:
         logger.warning(f"⚠️ Playwright install failed or already handled: {e}")
 
-async def run_crawler(target_area=None, target_count=10, resume=False, custom_keywords=None):
+async def run_crawler(target_area=None, target_count=10, resume=False, custom_keywords=None, shop_type=None, app_mode=False, exclude_keywords=None, filter_mode='all', filter_keyword=''):
     # Proactively try to install browsers in Cloud environments
     is_cloud = os.environ.get("STREAMLIT_RUNTIME_ENV") or "/home/appuser" in os.getcwd() or os.environ.get("STREAMLIT_SERVER_BASE_URL")
     if is_cloud:
         logger.info("☁️ Cloud environment detected. Ensuring Playwright browsers...")
         await install_playwright_browsers()
+
+    # 0. Setup Excludes
+    exclude_list = config.DEFAULT_EXCLUDED_KEYWORDS.copy()
+    if exclude_keywords:
+        if isinstance(exclude_keywords, str):
+            dynamic_excludes = [x.strip() for x in exclude_keywords.split(",") if x.strip()]
+            exclude_list.extend(dynamic_excludes)
+        elif isinstance(exclude_keywords, list):
+            exclude_list.extend(exclude_keywords)
+    
+    if exclude_list:
+        logger.info(f"🚫 Active Exclusion Keywords ({len(exclude_list)}): {exclude_list}")
+    
+    # [NEW] Filter Settings
+    # filter_mode: 'all', 'name', 'category'
+    if not filter_mode: filter_mode = 'all'
+    logger.info(f"🔍 Filter Mode: {filter_mode} | Target: {filter_keyword if filter_keyword else 'None'}")
     
     # Target Keywords (Deep Scan Support)
+    base_keyword = shop_type if shop_type else "" # 기본값 제거
+    
     if custom_keywords:
         logger.info(f"🎯 Custom Keywords Provided: {len(custom_keywords)} keywords")
         keywords = custom_keywords
     elif target_area:
-        # Check if target is "Region District" (e.g. "전남 목포시")
-        parts = target_area.split()
-        if len(parts) >= 2 and parts[0] in config.CITY_MAP:
-            province, district = parts[0], parts[1]
-            logger.info(f"📍 Granular Scan Mode: Target '{province}' -> '{district}'")
-            
-            if district in config.CITY_MAP[province]:
-                dongs = config.CITY_MAP[province][district]
-                keywords = [f"{province} {district} {dong} 피부관리샵" for dong in dongs]
-                logger.info(f"📂 Generated {len(keywords)} specific keywords for {district} (Dong-level)")
-            else:
-                # Fallback if district not found in map (e.g. minor name mismatch)
-                logger.warning(f"⚠️ District '{district}' not found in map. Using generic district keyword.")
-                keywords = [f"{target_area} 피부관리샵"]
+        # [MODIFIED] Advanced Target Analysis & Sanitization
+        target_area = str(target_area).strip("[]").replace("'", "").replace('"', "")
+        targets = [t.strip() for t in target_area.split(",") if t.strip()]
+        logger.info(f"🎯 Parsing Multi-Target: {targets}")
         
-        elif target_area in config.CITY_MAP:
-            logger.info(f"🔍 Deep Scan Mode: Expanding '{target_area}' to Dong-level keywords...")
-            keywords = config.get_deep_keywords(target_area)
-            logger.info(f"📂 Total sub-keywords to crawl: {len(keywords)}")
+        all_keywords = []
+        for t in targets:
+            # Check if it's "Province District" (e.g., "서울 강남구")
+            if " " in t:
+                parts = t.split()
+                province = parts[0]
+                district = " ".join(parts[1:])
+                
+                if province in config.CITY_MAP and district in config.CITY_MAP[province]:
+                    # 1. Granular District Mode -> Expand to Dong-level
+                    dongs = config.CITY_MAP[province][district]
+                    all_keywords.extend([f"{province} {district} {dong} {base_keyword}" for dong in dongs])
+                    logger.info(f"   + [정밀수집] '{t}' -> {len(dongs)}개 상세 키워드 생성 (동 단위)")
+                else:
+                    all_keywords.append(f"{t} {base_keyword}")
+                    logger.info(f"   + [일반수집] '{t}' (지도 데이터 미매칭)")
             
-        else:
-             # Generic fallback
-            keywords = [f"{target_area} 피부관리샵"]
+            elif t in config.CITY_MAP:
+                # 2. Whole Province Mode (e.g., "인천") -> Expand ALL districts/dongs
+                prov_keywords = []
+                districts = config.CITY_MAP[t]
+                for dist, dongs in districts.items():
+                    for dong in dongs:
+                        prov_keywords.append(f"{t} {dist} {dong} {base_keyword}")
+                all_keywords.extend(prov_keywords)
+                logger.info(f"   + [전체수집] '{t}' -> {len(prov_keywords)}개 전체 키워드 생성 (도시 전체)")
+            
+            else:
+                # 3. Generic Fallback
+                all_keywords.append(f"{t} {base_keyword}")
+                logger.info(f"   + [개별수집] '{t}'")
+        
+        # Unique list preservation order
+        seen = set()
+        keywords = []
+        for kw in all_keywords:
+            if kw not in seen:
+                keywords.append(kw)
+                seen.add(kw)
+        
+        logger.info(f"📂 최종 수집 대상 키워드: {len(keywords)}개")
+
     else:
-        keywords = ["서울 강남구 피부관리샵"] 
+        keywords = [f"서울 강남구 {base_keyword}"] 
 
     checkpoint_file = os.path.join(os.getcwd(), "crawler_checkpoint.json")
     start_index = 0
@@ -271,45 +341,125 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
             logger.error(f"⚠️ Error loading checkpoint: {e}")
 
     total_saved = 0
-    keywords_to_run = keywords[start_index:]
-    # Load Existing URLs for Smart Skip (Remote + Local)
-    existing_urls = set()
+    total_skipped = 0 # New: Track skipped for ETA
+    total_errors = 0  # New: Track errors
+    start_time = time.time() # New: Track start time
     
-    # 1. Remote (Firebase)
-    try:
-        db = DBHandler()
-        if db.db_fs:
-            logger.info("📡 Fetching existing URLs from Firebase...")
-            url_list = db.fetch_existing_urls()
-            existing_urls = set(url_list)
-            logger.info(f"✅ Loaded {len(existing_urls)} remote URLs.")
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to load remote URLs: {e}")
-        
-    # 2. Local Cache
-    if os.path.exists(LOCAL_CACHE_FILE):
+    # [NEW] Adaptive Estimation Tracking Variables
+    total_keywords_processed = 0
+    total_shops_discovered = 0
+    # [NEW] Realistic initial estimation for unlimited mode
+    if target_count > 90000:
+        estimated_total = 0 # Will trigger '계산 중...' in UI
+        eta_sec = "계산 중..."
+    else:
+        estimated_total = target_count # Initial estimate for trial/limited
+        eta_sec = "추정 불가"
+    
+    # --- Emit Initial Progress JSON ---
+    initial_data = {
+        "run_started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(start_time)),
+        "success_count": 0,
+        "skip_count": 0,
+        "error_count": 0,
+        "elapsed_sec": 0,
+        "estimated_total": estimated_total,
+        "completion_ratio": 0.0,
+        "avg_sec_per_item": 0.0,
+        "remaining_time": eta_sec,
+        "estimation_confidence": "초기 추정",
+        "current_segment": "엔진 준비 중..."
+    }
+    print(f"PROGRESS_JSON: {json.dumps(initial_data, ensure_ascii=False)}", flush=True)
+
+    keywords_to_run = keywords[start_index:]
+    # --- LOAD DYNAMIC SETTINGS ---
+    SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'crawler_settings.json')
+    # [ACCELERATED] Faster delays for commercial readiness
+    min_delay, max_delay = 7, 15
+    kw_min, kw_max = 15, 30
+    
+    if os.path.exists(SETTINGS_FILE):
         try:
-            with open(LOCAL_CACHE_FILE, "r", encoding="utf-8") as f:
-                local_data = json.load(f)
-                for d in local_data:
-                    u = d.get('detail_url')
-                    if u: existing_urls.add(u)
-            logger.info(f"✅ Integrated local cache URLs. Total Skip List: {len(existing_urls)}")
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+                min_delay = 7
+                max_delay = 15
+                kw_min = 10
+                kw_max = 20
+                if shop_type is None: shop_type = settings.get("shop_type")
+                if app_mode is False: app_mode = settings.get("app_mode", False)
+                if not filter_mode: filter_mode = settings.get("filter_mode", "all")
+                if not filter_keyword: filter_keyword = settings.get("filter_keyword", "")
+                logger.info(f"⚙️ Normalized Settings for Speed: Detail {min_delay}-{max_delay}s")
+        except Exception as e:
+            logger.warning(f"Failed to load dynamic settings: {e}")
+    else:
+        logger.info(f"⚙️ Using Fast Defaults: {min_delay}-{max_delay}s")
+
+    # Ensure log directory exists
+    os.makedirs(config.LOCAL_LOG_PATH, exist_ok=True)
+    progress_file = config.PROGRESS_FILE
+
+    # Initialize Local DB Handler (Rule 3.3 Optimization)
+    db = LocalDBHandler(config.LOCAL_DB_PATH)
+    logger.info("📡 DB existence check engine initialized (Memory Efficient Mode)")
+    for h in logging.getLogger().handlers: h.flush()
+
+    # [FIXED] Non-blocking Cleanup to prevent infinite hang (Monster Rule 3.2)
+    if sys.platform == "win32":
+        import subprocess
+        try:
+            logger.info("🧹 Cleaning up old browser/driver processes (Non-blocking)...")
+            for h in logging.getLogger().handlers: h.flush()
+            # os.system 대신 Popen으로 실행 후 기다리지 않음
+            subprocess.Popen("taskkill /f /im node.exe", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen("taskkill /f /im chrome.exe /fi \"memusage lt 50000\"", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen("taskkill /f /im msedge.exe /fi \"memusage lt 50000\"", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # 타임아웃 0.5초만 주고 바로 다음으로 패스
+            time.sleep(0.5) 
         except: pass
 
-    browser = None # Declare browser outside try-finally for finally block access
+    browser = None 
     try:
         async with async_playwright() as p:
+
             # Cloud-Compatible Browser Launch Logic
             browser = None
+
             launch_args = [
                 "--disable-blink-features=AutomationControlled", 
                 "--no-sandbox", 
                 "--disable-setuid-sandbox", 
                 "--disable-dev-shm-usage",
-                "--disable-gpu"
+                "--disable-gpu",
+                "--window-position=1300,0",
+                "--window-size=450,1050"
             ]
+            if app_mode:
+                launch_args.append("--app=https://m.place.naver.com")
             
+            # [NEW] IMMEDIATE START SIGNALING
+            summary_data = {
+                "run_started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(start_time)),
+                "success_count": 0,
+                "skip_count": 0,
+                "error_count": 0,
+                "elapsed_sec": 0,
+                "elapsed_time": "00:00:00",
+                "estimated_total": target_count,
+                "completion_ratio": 0.0,
+                "avg_time_per_item": 0.0,
+                "remaining_time": "--:--:--",
+                "estimation_confidence": "초기화 중",
+                "current_stage": "엔진 최적화 및 브라우저 기동 중..."
+            }
+            try:
+                with open(progress_file, "w", encoding="utf-8") as f:
+                    json.dump(summary_data, f, ensure_ascii=False, indent=2)
+                print(f"PROGRESS_JSON: {json.dumps(summary_data, ensure_ascii=False)}", flush=True)
+            except: pass
+
             # Strategy 1: Try system chromium (for Streamlit Cloud / Linux)
             if os.path.exists("/usr/bin/chromium"):
                 try:
@@ -322,7 +472,18 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                 except Exception as e:
                     logger.warning(f"System chromium failed: {e}")
             
-            # Strategy 2: Fallback to Playwright's bundled browser
+            # Strategy 2: Fallback to System Chrome/Edge
+            if not browser:
+                try:
+                    logger.info("🌐 Launching System Chrome/Edge (Headed)...")
+                    try:
+                        browser = await p.chromium.launch(headless=False, args=launch_args, channel="chrome", timeout=30000)
+                    except Exception:
+                        browser = await p.chromium.launch(headless=False, args=launch_args, channel="msedge", timeout=30000)
+                except Exception as e:
+                    logger.warning(f"⚠️ Headed launch failed: {e}. Trying bundled fallback...")
+
+            # Strategy 3: Fallback to Playwright's bundled browser
             if not browser:
                 try:
                     logger.info("🌐 Using Playwright bundled browser")
@@ -378,15 +539,15 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                 if total_saved >= target_count: break
                 
                 keyword_count += 1
-                # ☕ Coffee Break: Pause every 5-7 keywords to avoid pattern detection
+                # ☕ Coffee Break: Shortened to ~70s as requested
                 if keyword_count > 0 and keyword_count % random.randint(5, 7) == 0:
-                    long_pause = random.uniform(120, 240)
-                    logger.info(f"☕ Taking a long coffee break... (Safety Pause: {long_pause:.1f}s)")
+                    long_pause = random.uniform(60, 80)
+                    logger.info(f"☕ Taking a safety break... (Safety Pause: {long_pause:.1f}s)")
                     await asyncio.sleep(long_pause)
                 
-                # 🚦 Inter-Keyword Delay: Ensure we don't rapid-fire searches
+                # 🚦 Inter-Keyword Delay
                 if keyword_count > 1:
-                    kw_delay = random.uniform(30, 60)
+                    kw_delay = random.uniform(kw_min, kw_max)
                     logger.info(f"⏳ Waiting {kw_delay:.1f}s before next keyword search...")
                     await asyncio.sleep(kw_delay)
                     
@@ -492,6 +653,56 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                         # SUCCESS - Log and Proceed
                         log_audit(keyword, shops_found_in_keyword, "SUCCESS")
                         
+                        # [NEW] Track for Adaptive Moving Average Estimation
+                        total_keywords_processed += 1
+                        total_shops_discovered += shops_found_in_keyword
+                        
+                        # --- PROGRESS ESTIMATION LOGIC (LEVEL B/C) ---
+                        # Update estimated total based on shops found in this keyword
+                        try:
+                            current_idx = keywords_to_run.index(keyword)
+                            remaining_kws = len(keywords_to_run[current_idx+1:])
+                            avg_shops_per_kw = total_shops_discovered / total_keywords_processed
+                            predicted_total = int(total_saved + (shops_found_in_keyword * 1.0) + (remaining_kws * avg_shops_per_kw))
+                            
+                            if target_count >= 90000:
+                                # Unlimited mode: use full prediction
+                                estimated_total = max(predicted_total, total_saved + 1)
+                            else:
+                                # [FIXED] Smart Capping: If prediction is less than the limit (e.g. 50), show the lower number.
+                                # If it's more, cap it at the limit.
+                                estimated_total = min(predicted_total, target_count)
+                                # But never lower than what we already found/saved
+                                estimated_total = max(estimated_total, total_saved + 1)
+                        except:
+                            if target_count >= 90000:
+                                estimated_total = total_saved + shops_found_in_keyword
+                            else:
+                                estimated_total = min(total_saved + shops_found_in_keyword, target_count)
+                                estimated_total = max(estimated_total, total_saved + 1)
+                        
+                        # [NEW] REPORT LIST DISCOVERY IMMEDIATELY
+                        prog_data = {
+                            "run_started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(start_time)),
+                            "success_count": total_saved,
+                            "skip_count": total_skipped,
+                            "error_count": total_errors,
+                            "elapsed_sec": int(time.time() - start_time),
+                            "estimated_total": estimated_total,
+                            "completion_ratio": round(total_saved / estimated_total, 4) if estimated_total > 0 else 0,
+                            "avg_time_per_item": 0.0,
+                            "remaining_time": "추정 중...",
+                            "estimation_confidence": "리스트 분석 중",
+                            "current_stage": f"🔍 [{keyword}] {shops_found_in_keyword}개 업체 발견! 수집 시작..."
+                        }
+                        with open(progress_file, "w", encoding="utf-8") as f:
+                            json.dump(prog_data, f, ensure_ascii=False, indent=2)
+                        print(f"PROGRESS_JSON: {json.dumps(prog_data, ensure_ascii=False)}", flush=True)
+                        # Lower bound constraint (Only if unbounded)
+                        if target_count >= 90000:
+                            estimated_total = max(estimated_total, total_saved + 1)
+                        # -----------------------------------------------
+
                         shops_to_visit = []
                         for li in list_items:
                             if len(shops_to_visit) >= (target_count - total_saved): break
@@ -517,34 +728,24 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                                     place_id = match.group(1)
                                     detail_url = f"https://m.place.naver.com/place/{place_id}/home"
                                     
-                                    # ⚡ SMART SKIP CHECK
-                                    if detail_url in existing_urls:
-                                        # Still apply a moderate delay for skip rhythm
-                                        dup_delay = random.uniform(5, 10)
-                                        await asyncio.sleep(dup_delay)
+                                    # ⚡ SMART SKIP CHECK (Rule 3.3 Optimized)
+                                    if db.exists_by_url(detail_url):
+                                        total_skipped += 1
                                         continue # Skip without logging to reduce noise
                                     
-                                    # Clean Name extraction
-                                    raw_name = await link_node.text_content()
-                                    if not raw_name or len(raw_name.strip()) < 2:
-                                        # Try to find name in a span or div if link text is empty/icon
-                                        name_node = li.locator("span.TYpUv, span.name, .title").first
-                                        if await name_node.count() > 0:
-                                            raw_name = await name_node.text_content()
-                                    
+                                    # [ENHANCED] Get Name with Error Check
+                                    raw_name = await li.locator("span.TYaxf, span.place_bluelink, span.YwYLL").first.text_content()
+                                    if not raw_name or "일시적인 오류" in raw_name or "다시 시도" in raw_name:
+                                        logger.warning("⚠️ Naver returned an error message instead of a shop name. Skipping item.")
+                                        continue
+                                        
                                     name = raw_name.replace("알림받기", "").replace("N예약", "").strip()
                                     
                                     # 🚫 KEYWORD FILTERING
                                     # User requested to exclude specific types of shops
-                                    EXCLUDED_KEYWORDS = [
-                                        "태닝", "타이", "마사지", "장애인", "왁싱", "풋샵", 
-                                        "하노이", "아로마", "중국", "경락", "발", "약손", "시암"
-                                    ]
-                                    if any(ex in name for ex in EXCLUDED_KEYWORDS):
-                                        # Enforce the EXACT SAME delay as a successful crawl to maintain rhythm
-                                        skip_delay = random.uniform(20, 40)
-                                        logger.info(f"🚫 Filtering out '{name}' (Excluded Keyword). Waiting {skip_delay:.1f}s to match rhythm...")
-                                        await asyncio.sleep(skip_delay)
+                                    if any(ex in name for ex in exclude_list):
+                                        logger.info(f"🚫 Filtering out '{name}' (Excluded Keyword).")
+                                        total_skipped += 1
                                         continue
                                     
                                     phone = ""
@@ -569,11 +770,57 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                                 continue
 
         
-                        logger.info(f"📍 Scheduled {len(shops_to_visit)} shops for detail extraction.")
+                        logger.info(f"📍 Scheduled {len(shops_to_visit)} new shops for detail extraction.")
+        
+                        # [FIX] Update progress after scanning the list, so dashboard reflects skipped duplicates
+                        processed_items = total_saved + total_skipped
+                        elapsed_sec = int(time.time() - start_time)
+                        avg_sec = elapsed_sec / processed_items if processed_items > 0 else 0
+                        remain = max(0, estimated_total - processed_items)
+                        
+                        def format_sec(s):
+                            return f"{s // 3600:02}:{(s % 3600) // 60:02}:{s % 60:02}"
+
+                        completion_ratio = processed_items / estimated_total if estimated_total > 0 else 0
+                        
+                        summary_data = {
+                            "run_started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(start_time)),
+                            "success_count": total_saved,
+                            "skip_count": total_skipped,
+                            "error_count": total_errors,
+                            "elapsed_sec": elapsed_sec,
+                            "elapsed_time": format_sec(elapsed_sec),
+                            "estimated_total": estimated_total,
+                            "completion_ratio": round(completion_ratio, 4),
+                            "avg_time_per_item": round(avg_sec, 2),
+                            "remaining_time": format_sec(int(remain * avg_sec)),
+                            "estimation_confidence": "안정 추정" if completion_ratio > 0.4 else "중간 추정" if completion_ratio > 0.1 else "초기 추정",
+                            "current_stage": f"📍 [{keyword}] 리스트 확인 완료. 남은 추출 진행 중..."
+                        }
+                        try:
+                            with open(progress_file, "w", encoding="utf-8") as f:
+                                json.dump(summary_data, f, ensure_ascii=False, indent=2)
+                        except: pass
         
                         # Visit each shop's detail page
-                        for shop_data in shops_to_visit:
+                        for shop_idx, shop_data in enumerate(shops_to_visit):
                             if total_saved >= target_count: break
+                            
+                            # [NEW] REPORT CURRENT TARGET IMMEDIATELY
+                            current_prog = {
+                                "success_count": total_saved,
+                                "estimated_total": estimated_total,
+                                "current_stage": f"📍 [{keyword}] {shop_idx+1}/{len(shops_to_visit)}: {shop_data.get('name')} 분석 중..."
+                            }
+                            # Simple merge for UI update
+                            try:
+                                with open(progress_file, "r", encoding="utf-8") as f:
+                                    full_prog = json.load(f)
+                                full_prog.update(current_prog)
+                                with open(progress_file, "w", encoding="utf-8") as f:
+                                    json.dump(full_prog, f, ensure_ascii=False, indent=2)
+                                print(f"PROGRESS_JSON: {json.dumps(full_prog, ensure_ascii=False)}", flush=True)
+                            except: pass
                             
                             shop_data.update({
                                 "owner_name": "",
@@ -587,37 +834,126 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                             })
         
                             if await extract_detail_info(page, shop_data):
-                                if shop_data.get("name") and shop_data.get("address"):
-                                    # 🛡️ FINAL DEFENSE: Keyword Filtering Check (Detail Level)
-                                    # Re-check name in case detail extraction found a fuller name containing forbidden keywords
-                                    EXCLUDED_KEYWORDS = [
-                                        "태닝", "타이", "마사지", "장애인", "왁싱", "풋샵", "하노이", "아로마", "중국", "경락", "발", "약손", "시암"
-                                    ]
-                                    if any(ex in shop_data['name'] for ex in EXCLUDED_KEYWORDS):
-                                        logger.warning(f"🛡️ Filtered out shop at detail level: {shop_data['name']}")
-                                        continue
-
-                                    if save_to_db(shop_data):
-                                        total_saved += 1
-                                        # Real-time Duplicate Prevention: Add to skip list immediately
-                                        if shop_data.get('detail_url'):
-                                            existing_urls.add(shop_data['detail_url'])
+                                try:
+                                    if shop_data.get("name") and shop_data.get("address"):
+                                        # 🛡️ FINAL DEFENSE: Keyword Filtering Check (Detail Level)
+                                        # Re-check name in case detail extraction found a fuller name containing forbidden keywords
+                                        if any(ex in shop_data['name'] for ex in exclude_list):
+                                            logger.warning(f"🛡️ Filtered out shop at detail level: {shop_data['name']} (Exclusion)")
+                                            total_skipped += 1
+                                            continue
                                         
-                                        # Standardized progress output for dashboard
-                                        print(f"Progress: {total_saved}/{target_count}", flush=True)
-                                        logger.info(f"✅ Saved ({total_saved}/{target_count}): {shop_data.get('name')}")
-                                else:
-                                    logger.warning(f"⏩ Skipping shop {shop_data.get('name')} due to missing critical info (Address).")
+                                        # [FIXED] Address Verification: Strict Boundary Control (Monster Rule 3.2)
+                                        addr = shop_data.get('address', '')
+                                        is_valid_addr = False
+                                        
+                                        # Use 'targets' variable (Fixed NameError from target_areas)
+                                        for t_area in targets:
+                                            # 유연한 매칭: '경기도' <-> '경기', '서울특별시' <-> '서울' 등 지원
+                                            clean_t = t_area.replace("특별시", "").replace("광역시", "").replace("자치시", "").replace("도", "").strip()
+                                            tokens = clean_t.split()
+                                            
+                                            if len(tokens) >= 2:
+                                                core_region = " ".join(tokens[-2:]) 
+                                                if core_region in addr or clean_t in addr:
+                                                    is_valid_addr = True
+                                                    break
+                                            else:
+                                                if clean_t in addr:
+                                                    is_valid_addr = True
+                                                    break
+                                        
+                                        if not is_valid_addr:
+                                            logger.info(f"🚫 Filtered out (Out of Bounds): {shop_data['name']} ({addr}) | Target: {targets}")
+                                            total_skipped += 1
+                                            continue
+                                        
+                                        # [NEW] Multi-Mode Filtering Logic
+                                        if filter_mode != 'all' and filter_keyword:
+                                            passed = False
+                                            if filter_mode == 'name':
+                                                if filter_keyword in shop_data['name']: passed = True
+                                            elif filter_mode == 'category':
+                                                cat = shop_data.get('category', '')
+                                                if filter_keyword in cat: passed = True
+                                            
+                                            if not passed:
+                                                logger.info(f"🛡️ Filtered out by Mode '{filter_mode}': {shop_data['name']}")
+                                                total_skipped += 1
+                                                continue
+
+                                        if save_to_db(shop_data):
+                                            total_saved += 1
+                                            logger.info(f"✅ Saved ({total_saved}/{target_count}): {shop_data.get('name')}")
+                                            
+                                            # [FIXED] Force immediate progress report WITH ETA (Monster Rule 3.2)
+                                            try:
+                                                elapsed_sec = int(time.time() - start_time)
+                                                processed = total_saved + total_skipped
+                                                avg_sec = elapsed_sec / processed if processed > 0 else 0
+                                                remain = max(0, estimated_total - processed)
+                                                
+                                                def format_sec(s):
+                                                    return f"{s // 3600:02}:{(s % 3600) // 60:02}:{s % 60:02}"
+
+                                                summary_data.update({
+                                                    "success_count": total_saved,
+                                                    "skip_count": total_skipped,
+                                                    "elapsed_sec": elapsed_sec,
+                                                    "elapsed_time": format_sec(elapsed_sec),
+                                                    "avg_time_per_item": round(avg_sec, 2),
+                                                    "remaining_time": format_sec(int(remain * avg_sec)),
+                                                    "completion_ratio": round(total_saved / estimated_total, 4) if estimated_total > 0 else 0,
+                                                    "current_stage": f"✅ [{keyword}] {shop_idx+1}/{len(shops_to_visit)}: {shop_data.get('name')} 추출 및 저장 완료!"
+                                                })
+                                                with open(progress_file, "w", encoding="utf-8") as f:
+                                                    json.dump(summary_data, f, ensure_ascii=False, indent=2)
+                                            except: pass
+                                    else:
+                                        logger.warning(f"⏩ Skipping shop {shop_data.get('name')} due to missing critical info (Address).")
+                                finally:
+                                    # Always update progress for general stats
+                                    elapsed_sec = int(time.time() - start_time)
+                                    # Calculate avg_sec using (saved + skipped) to show accurate speed
+                                    processed_items = total_saved + total_skipped
+                                    avg_sec = elapsed_sec / processed_items if processed_items > 0 else 0
+                                    remain = max(0, estimated_total - processed_items)
+                                    eta_sec = int(remain * avg_sec)
+                                    
+                                    def format_sec(s):
+                                        return f"{s // 3600:02}:{(s % 3600) // 60:02}:{s % 60:02}"
+
+                                    completion_ratio = processed_items / estimated_total if estimated_total > 0 else 0
+                                    confidence = "초기 추정" if completion_ratio < 0.1 else "중간 추정" if completion_ratio < 0.4 else "안정 추정"
+                                        
+                                    summary_data = {
+                                        "run_started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(start_time)),
+                                        "success_count": total_saved,
+                                        "skip_count": total_skipped,
+                                        "error_count": total_errors,
+                                        "elapsed_sec": elapsed_sec,
+                                        "elapsed_time": format_sec(elapsed_sec),
+                                        "estimated_total": estimated_total,
+                                        "completion_ratio": round(completion_ratio, 4),
+                                        "avg_time_per_item": round(avg_sec, 2),
+                                        "remaining_time": format_sec(eta_sec),
+                                        "estimation_confidence": confidence,
+                                        "current_stage": f"🔄 [{keyword}] {shop_idx+1}/{len(shops_to_visit)}: 추출 및 검증 완료"
+                                    }
+                                    try:
+                                        with open(progress_file, "w", encoding="utf-8") as f:
+                                            json.dump(summary_data, f, ensure_ascii=False, indent=2)
+                                        print(f"PROGRESS_JSON: {json.dumps(summary_data, ensure_ascii=False)}", flush=True)
+                                    except: pass
                             
-                            # Random delay between detail pages to avoid detection
-                            # Reverted to 20s ~ 40s per user request, but matched with skips
-                            sleep_time = random.uniform(20, 40)
+                            # [FAST] Aggressive delay for commercial speed
+                            sleep_time = random.uniform(min_delay, max_delay)
                             logger.info(f"⏳ Waiting {sleep_time:.1f}s before next shop detail...")
                             await asyncio.sleep(sleep_time)
 
                             # 🧘 Micro safety break every 10 items
                             if total_saved > 0 and total_saved % 10 == 0:
-                                micro_break = random.uniform(180, 300)
+                                micro_break = random.uniform(60, 80)
                                 logger.info(f"🧘 Session break for safety... (Pause: {micro_break:.1f}s)")
                                 await asyncio.sleep(micro_break)
                         
@@ -627,6 +963,7 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                     except Exception as e:
                          logger.error(f"Error processing keyword {keyword}: {e}")
                          log_audit(keyword, 0, f"ERROR_{type(e).__name__}")
+                         total_errors += 1
 
                 # ✅ Save checkpoint after each successful keyword (DONG)
                 with open(checkpoint_file, "w", encoding="utf-8") as f:
@@ -639,23 +976,23 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
         if keywords_to_run:
             with open(checkpoint_file, "w", encoding="utf-8") as f:
                 json.dump({"last_keyword": keywords_to_run[-1], "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')}, f, ensure_ascii=False)
+                
+        # [NEW] Write completion status to progress.json
+        try:
+            with open(progress_file, "r", encoding="utf-8") as f:
+                prog_data = json.load(f)
+            prog_data["status"] = "completed"
+            prog_data["current_stage"] = "🎉 수집이 완료되었습니다!"
+            with open(progress_file, "w", encoding="utf-8") as f:
+                json.dump(prog_data, f, ensure_ascii=False, indent=2)
+            print(f"PROGRESS_JSON: {json.dumps(prog_data, ensure_ascii=False)}", flush=True)
+        except: pass
 
     except Exception as e:
         logger.error(f"Error in run_crawler session: {e}")
     finally:
-        # 🚀 AUTOMATIC FINAL SYNC
-        if os.path.exists(LOCAL_CACHE_FILE):
-            try:
-                with open(LOCAL_CACHE_FILE, "r", encoding="utf-8") as f:
-                    sync_data = json.load(f)
-                
-                if sync_data:
-                    logger.info(f"🆙 Final Auto-Sync: Uploading {len(sync_data)} shops to Firebase...")
-                    db = DBHandler()
-                    uploaded = db.batch_insert_shops(sync_data)
-                    logger.info(f"✅ Sync Complete: {uploaded} shops uploaded.")
-            except Exception as e:
-                logger.error(f"❌ Final Auto-Sync Failed: {e}")
+        # 🚀 FINAL SYNC REMOVED (Migrated to SQLite)
+        logger.info("🏁 Crawling session finished. Data is safely stored in SQLite.")
         
         if browser:
             await browser.close()
@@ -670,11 +1007,15 @@ if __name__ == "__main__":
     
     raw_count = sys.argv[2] if len(sys.argv) > 2 else "10"
     try:
-        count = int(raw_count) if raw_count != "None" else 10
+        count = int(raw_count) if raw_count not in ["None", ""] else 10
     except:
         count = 10
         
+    # Handle shop_type (3rd argument)
+    shop_type = sys.argv[3] if len(sys.argv) > 3 and not sys.argv[3].startswith("--") else None
+    
     resume_mode = "--resume" in sys.argv
+    app_mode = "--app" in sys.argv
     
     # 📢 THIS IS THE MOST CRITICAL LINE FOR DASHBOARD FEEDBACK
     print(f"Progress: 0/{count}", flush=True)
@@ -684,8 +1025,19 @@ if __name__ == "__main__":
     if is_cloud:
         print(f"DEBUG: Running on Cloud Environment. Python: {sys.executable}", flush=True)
     
+    exclude_val = None
+    filter_mode_arg = 'all'
+    filter_kw_arg = ''
+    for i, arg in enumerate(sys.argv):
+        if arg == "--exclude" and i + 1 < len(sys.argv):
+            exclude_val = sys.argv[i+1]
+        elif arg == "--filter-mode" and i + 1 < len(sys.argv):
+            filter_mode_arg = sys.argv[i+1]
+        elif arg == "--filter-keyword" and i + 1 < len(sys.argv):
+            filter_kw_arg = sys.argv[i+1]
+
     try:
-        asyncio.run(run_crawler(target, count, resume=resume_mode))
+        asyncio.run(run_crawler(target, count, resume=resume_mode, shop_type=shop_type, app_mode=app_mode, exclude_keywords=exclude_val, filter_mode=filter_mode_arg, filter_keyword=filter_kw_arg))
         
         # 🎯 AUTOMATIC COMPETITOR EXTRACTION DISABLED (Manual control requested)
         # print("Progress: Finalizing...", flush=True)

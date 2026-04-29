@@ -1,14 +1,11 @@
 {
     "tpl_A": {
-        "subject": "[제안] 루미PLUS 비즈니스 협업 제안드립니다.",
-        "body": "안녕하세요 {상호명} 원장님,\n\n피부샵 성장을 돕는 루미PLUS입니다...Thi"
+        "subject": "[제안] 비즈니스 협업 제안드립니다.",
+        "body": "안녕하세요 {상호명} 원장님,\n\n협업 제안 드립니다..."
     },
-    "tpl_B": "안녕하세요 {상호명} 원장님! 톡톡으로 문의드립니다.",
-    "tpl_C": "안녕하세요 {상호명} 원장님, 인스타 DM 드립니다!",
-    "gmail_user": "sundream7878@gmail.com",
-    "gmail_app_pw": "mkka kpbx poyr iddo",
-    "naver_user": "",
-    "naver_pw": "",
-    "insta_user": "chiu3@naver.com ",
-    "insta_pw": "lichi8989)"
+    "tpl_C": "안녕하세요 {상호명} 원장님, 메시지 드립니다!",
+    "email_user": "",
+    "email_pw": "",
+    "insta_user": "",
+    "insta_pw": ""
 }

@@ -46,8 +46,8 @@ async def main():
         dongs = prov_data[district]
         logger.info(f"📌 Preparing keywords for {target_province} {district} ({len(dongs)} dongs)...")
         for dong in dongs:
-            # Construct keyword: "[Province] [District] [Dong] 피부관리샵"
-            keyword = f"{target_province} {district} {dong} 피부관리샵"
+            # Construct keyword: "[Province] [District] [Dong]"
+            keyword = f"{target_province} {district} {dong}".strip()
             recovery_keywords.append(keyword)
 
     logger.info(f"📋 Total Keywords to process: {len(recovery_keywords)}")

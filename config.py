@@ -7,52 +7,92 @@ except ImportError:
     # On Streamlit Cloud, variables are managed via Secrets, so dotenv is optional
     pass
 
-# Supabase Settings
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-SUPABASE_TABLE = "t_crawled_shops" # Standard table name for leads
-LEADS_TABLE = "t_crawled_shops"    # Unified name
+# [카페 몬스터] 통합 브랜드 및 기술 규격 적용
 
-# Apify Settings
-APIFY_TOKEN = os.getenv("APIFY_TOKEN")
+# Local Database Settings (SQLite) - CafeMonster Standard Path
+PRODUCT_ID = "NPlace-DB"
+CURRENT_VERSION = "1.1.0"
+LOCAL_BASE_PATH = f"C:\\CafeMonster\\{PRODUCT_ID}"
+LOCAL_DB_PATH = os.path.join(LOCAL_BASE_PATH, "data", "database.sqlite")
+LOCAL_LOG_PATH = os.path.join(LOCAL_BASE_PATH, "data", "log")
+PROGRESS_FILE = os.path.join(LOCAL_LOG_PATH, "progress.json")
+ENGINE_LOG_FILE = os.path.join(LOCAL_BASE_PATH, "crawler_place.log")
 
-# Firebase Settings
-FIREBASE_KEY_PATH = os.path.join(os.path.dirname(__file__), "firebase_key.json")
-FIREBASE_COLLECTION = "crawled_shops"
-FIREBASE_SESSION_COLLECTION = "browser_sessions"
+# Ensure base directories exist
+os.makedirs(LOCAL_LOG_PATH, exist_ok=True)
+os.makedirs(os.path.join(LOCAL_BASE_PATH, "data"), exist_ok=True)
 
-# Load Firebase Service Account Info
-FIREBASE_SERVICE_ACCOUNT = None
+# [마케팅 몬스터] 통합 브랜드 및 기술 규격 적용
+BRAND_NAME_KR = "NPlace_DB"
+SERVICE_NAME_KR = "NPlace-DB (네이버 플레이스 수집)"
 
-# 1. Try to load from Streamlit Secrets (Recommended for Cloud)
-try:
-    import streamlit as st
-    if "firebase" in st.secrets:
-        # Convert st.secrets proxy to a real dict
-        FIREBASE_SERVICE_ACCOUNT = dict(st.secrets["firebase"])
-except:
-    pass
+# EXCLUSION SETTINGS
+DEFAULT_EXCLUDED_KEYWORDS = []
 
-# 2. Try to load from Environment Variable (Single JSON String)
-if not FIREBASE_SERVICE_ACCOUNT:
-    env_key = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
-    if env_key:
-        try:
-            import json
-            FIREBASE_SERVICE_ACCOUNT = json.loads(env_key)
-        except:
-            pass
+# UI Branding Colors (Standard)
+COLOR_DEEP_BLUE = "#1A237E"
+COLOR_ELECTRIC_PURPLE = "#6200EE"
+COLOR_NEON_GREEN = "#00E676"
+COLOR_DARK_BG = "#0B0E23" # Deep Dark for Premium Look
 
-# 3. Fallback to local file path (Local Development)
-if not FIREBASE_SERVICE_ACCOUNT:
-    FIREBASE_SERVICE_ACCOUNT = FIREBASE_KEY_PATH
+# --- [인증 및 클라우드 설정] ---
+# Firebase 서비스 계정 설정
+FIREBASE_SERVICE_ACCOUNT = {
+  "type": "service_account",
+  "project_id": "n-place-db",
+  "private_key_id": "dd7a1423801fc0c12fbe6e402650e040b80fbaf0",
+  "private_key": ("-----BEGIN PRIVATE KEY-----\n"
+                  "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQD/BT6kKxrpmfpc\n"
+                  "+ypwA7PHLqqgngtvv0jhsnPDPwBh0ZeenizzqVIU/4hOsCl3pjXmKC/Jo45L/kxA\n"
+                  "FSdtVJ6v3fRYXA7/+0M6LbiDCA/bH2zVVzjdjzQySKKd7mCfPI3NCJhMBUt8/DjJ\n"
+                  "FvsD7wl3/dlmlrQmVoLJdoYmWwo1g0tCThMZz1fCG9yfZv7BzzQH40mUk2W5Go7S\n"
+                  "m7zJSkApHpjq/PgtHhrm9wLnE6Wd5aM9Ow7qf5qHbBlvmypFSQ+o4fGrPta0fARP\n"
+                  "/+/f/cgGz/vLd8UbuZEloUTrv1A1LjEy+WFiK2I4ar5VuGqZSuMcj1A/1DIF2QJw\n"
+                  "pB/AQ7YBAgMBAAECggEABGfRSgxqlcWGCIwtkqt7CW0EypXgXwkAF9IO45Js4xkN\n"
+                  "VFKpi84NhR+tpE+xGl2MidIrkoFY/cwXV3YQwnfsmTTYOfHhL8qQlz/fSPg0hJW5\n"
+                  "j21HJgtex02aQuiG0nQSg7ZrIckSTEbz2Nl6SE+dVhgpuiF5XD4wr+KfH6jWoiT+\n"
+                  "gwJKWBc+MO03ow/Dv4j7UeB09GPRj7eFGRIZgBDz4DTWmWIB74fl/aV0egY/HcQt\n"
+                  "7dxawFUKZdbSZQNt02WQpvavQo5+zXj+5/9f/x8mvB14fVzY92gHafPCI+x7s2wo\n"
+                  "6qXBPrLJt0SpxHqt1t+/JLcSA52JSIr5eQgV9TSXfwKBgQD/xUzVqSivol5D02nF\n"
+                  "LiOMkdYGKnEJZx8IyDDr6X9cYcjFYZIrEQ7kwYmRdI1gMDZ9baEfZR68+4iMqtOd\n"
+                  "sc/nH7l0alQ6AqdUTriaVGftcb18oiNExAsoL40B2BmYXeqqOBhbdwQGJCbwjXAI\n"
+                  "1Jp4nqTOtuhOFFvbnxLFQVyTowKBgQD/P8W6xbnZt8k6N7ezKLQqkIUkeLHN0m9p\n"
+                  "aqjxn5YkhlECQUMotxlOcYcKrsV57AQCfX69IWg8zkeD6XzavP12Wb+iZRzNxNUX\n"
+                  "ferkYBmi0odzLWY28swcAtDSNEFexdjDDqATuN+WZ3cCxi82Cm0a6HF7idopy4TC\n"
+                  "uT9GrrcKCwKBgBelewwJ3pwWS9bDdfTn5ht55Cqfw+GVqhXaxEMbTE4TMEenVKcs\n"
+                  "pY7aochT2To6Wt9PwmSvqZ7ZNm+i33ul083PbgroRa8zTZsKyCBki1M1f8pFBzO1\n"
+                  "WD633rZ77ynaDPb9xqq2HyYeM4dr3B7E4R8js6L04BdP5Ioyc77O4ys3AoGASiLg\n"
+                  "sGXbnCPoW3NxdKT+51oAgd5YblqPp4OmPD/I4STuBISmF/5OaF1LBsxKaSYm5/5B\n"
+                  "QHeiif60ANlhPTslNynMIkPSAOYJqoAVKG3NJGCXnNlz1cPhisU6l8M7tWYrlkP6\n"
+                  "NKA+uLWmeHTNo5mVpPocc/BPIFKPZeteOI5odY8CgYAx2hhq4YdX5/Kj7vF172qu\n"
+                  "HnjJ8ftrShkJQD68iz9SdREQ6n54CyRKJ+JvJK2KxGhtw+ISf6Okr78HMnru8GL1\n"
+                  "wTtDrWRW4wWLhX/vv2QrPAR6pn5E0aZOloeZ0wvN8PS235M9IWmduDVqJFUupfqn\n"
+                  "kVxhbMREmz717BplgRvbug==\n"
+                  "-----END PRIVATE KEY-----\n"),
+  "client_email": "firebase-adminsdk-fbsvc@n-place-db.iam.gserviceaccount.com",
+  "client_id": "117331856806527264180",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40n-place-db.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
+
+FIREBASE_COLLECTION = "collected_shops" # 수집 데이터 저장소
+FIREBASE_AUTH_COLLECTION = "licenses"   # 라이선스 관리 컬렉션 (가이드 준수)
+
+# --- [Supabase 설정] ---
+SUPABASE_URL = os.getenv("VITE_SUPABASE_URL", "https://suwinftalfgybvrnzruz.supabase.co")
+SUPABASE_KEY = os.getenv("VITE_SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN1d2luZnRhbGZneWJ2cm56cnV6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMDQ3OTEsImV4cCI6MjA5MTg4MDc5MX0.OJAE_djjwIxR1pDNVx45HprOcAtU8gZopGJx8hvJMt4")
+# ------------------------------
+
 
 # Output Settings
 OUTPUT_CSV = "확장_피부샵_원장_데이터.csv"
 
 # Crawling Settings
-MIN_DELAY = 20
-MAX_DELAY = 70
+MIN_DELAY = 10
+MAX_DELAY = 30
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
 
@@ -63,26 +103,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
 ]
-
-# Search Keywords by Category
-# Search Keywords by Category
-KEYWORDS = {
-    "acne_whitening": [
-        "여드름 관리 후기", "성인 여드름 관리", "부산 피부미백 관리", 
-        "대구 리프팅 케어", "주름 개선 관리", "고주파 관리"
-    ],
-    "basic_care": [
-        "민감성 피부 관리 후기", "피부 수분 관리", "블랙헤드 제거 후기", 
-        "인천 피부 재생 관리", "LDM 관리"
-    ],
-    "business": [
-        "피부샵 창업", "1인 피부샵 운영", "피부샵 마케팅", 
-        "피부샵 운영 노하우", "에스테티션 일상", "피부샵 매출 올리기"
-    ],
-    "consumer": [
-        "피부샵 추천", "내돈내산 피부샵 후기", "결혼 전 피부관리"
-    ]
-}
 
 # ==========================================
 # [Module 1] Lumi-Link Crawler Settings
@@ -102,10 +122,9 @@ HEADLESS_MODE = False # Set to False for debugging visibility
 
 # Target Locations/Keywords for Module 1
 # Base Keyword
-BASE_KEYWORD = "피부관리샵"
+BASE_KEYWORD = ""
 
 # Major Korean Regions (State -> Districts -> Dongs mapping)
-# Loaded from a separate JSON for clean maintenance.
 regions_file = os.path.join(os.path.dirname(__file__), 'crawler', 'regions.json')
 CITY_MAP = {}
 if os.path.exists(regions_file):
@@ -131,6 +150,4 @@ def get_deep_keywords(target_city: str) -> list:
             keywords.append(f"{target_city} {district} {dong} {BASE_KEYWORD}")
     return keywords
 
-# DEPRECATED: Standard REGIONS list for dashboard selectbox population
-# Updated to load dynamically from regions.json
 REGIONS_LIST = list(CITY_MAP.keys()) if CITY_MAP else ["서울", "인천", "경기"]

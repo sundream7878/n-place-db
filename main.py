@@ -5,7 +5,7 @@ from typing import List
 from crawler.safe_crawler import SafeCrawler
 from crawler.searcher import Searcher
 from crawler.extractor import Extractor
-from crawler.db_handler import DBHandler
+from crawler.local_db_handler import LocalDBHandler
 from crawler.csv_handler import CSVHandler
 import config
 
@@ -27,7 +27,7 @@ def main():
     crawler = SafeCrawler()
     searcher = Searcher(crawler)
     extractor = Extractor(crawler)
-    db = DBHandler()
+    db = LocalDBHandler(config.LOCAL_DB_PATH)
     csv_handler = CSVHandler()
     
     # Get all keywords

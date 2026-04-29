@@ -9,3 +9,7 @@ geopy
 playwright
 firebase-admin
 apify-client
+openpyxl
+pycryptodome
+wmi
+customtkinter

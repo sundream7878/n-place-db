@@ -116,7 +116,7 @@ async def run_crawler():
                             
                             # Save Intermediate
                             if collected_urls:
-                                with open("intermediate_links.csv", "a", encoding="utf-8", newline="") as f:
+                                with open("intermediate_links.csv", "a", encoding="utf-8-sig", newline="") as f:
                                     w = csv.writer(f)
                                     for u in collected_urls:
                                         w.writerow([u, keyword])
@@ -173,7 +173,7 @@ async def run_crawler():
 
                                     # Save
                                         # Save to CSV
-                                        with open(OUTPUT_FILE, 'a', encoding='utf-8', newline='') as f:
+                                        with open(OUTPUT_FILE, 'a', encoding='utf-8-sig', newline='') as f:
                                             writer = csv.DictWriter(f, fieldnames=shop_data.keys())
                                             writer.writerow(shop_data)
                                         
