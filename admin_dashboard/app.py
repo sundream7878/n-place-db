@@ -32,7 +32,9 @@ def load_templates():
     if os.path.exists(TEMPLATE_FILE):
         with open(TEMPLATE_FILE, "r", encoding="utf-8") as f: return json.load(f)
     return {
-        "email_user": "", "email_pw": "", "naver_user": "", "naver_pw": "", "insta_user": "", "insta_pw": "",
+        "email_profiles": {}, 
+        "active_email_profile": "",
+        "naver_user": "", "naver_pw": "", "insta_user": "", "insta_pw": "",
         "tpl_A": {"subject": "안녕하세요, {상호명} 원장님!", "body": "원장님 안녕하세요! 마케팅 몬스터입니다."},
         "tpl_B": "안녕하세요! 네이버 톡톡 메시지입니다.",
         "tpl_C": "인스타그램 DM 메시지입니다."
@@ -40,8 +42,8 @@ def load_templates():
 
 def save_templates():
     data = {
-        "email_user": st.session_state.get('email_user', ''),
-        "email_pw": st.session_state.get('email_pw', ''),
+        "email_profiles": st.session_state.get('email_profiles', {}),
+        "active_email_profile": st.session_state.get('active_email_profile', ''),
         "naver_user": st.session_state.get('naver_user', ''),
         "naver_pw": st.session_state.get('naver_pw', ''),
         "insta_user": st.session_state.get('insta_user', ''),
@@ -225,6 +227,29 @@ st.markdown("""
     }
     /* 버튼 글자 찌그러짐 방지 */
     .stButton button { white-space: nowrap !important; }
+
+    /* [NEW] Sticky Header 스타일 */
+    [data-testid="stHeader"] { background: rgba(255,255,255,0.8); backdrop-filter: blur(10px); }
+    
+    /* 상단 및 하단 기본 여백 조정 */
+    .block-container { padding-top: 0rem !important; padding-bottom: 10rem !important; }
+    [data-testid="stVerticalBlockBorderWrapper"] > div:nth-child(1) { margin-top: 0 !important; }
+    
+    /* 버튼이 바닥에 붙지 않도록 섹션 간격 조정 */
+    .stButton { margin-top: 2rem !important; margin-bottom: 2rem !important; }
+
+    /* [FIXED] 초강력 Sticky Header - 특정 클래스나 ID 없이 영역 기반으로 타겟팅 */
+    [data-testid="stVerticalBlock"] > div:has(.nav-anchor) {
+        position: sticky;
+        top: 0; /* 최상단 밀착 */
+        z-index: 1000;
+        background-color: white;
+        padding-top: 15px;
+        padding-bottom: 15px;
+        border-bottom: 3px solid #00E676;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    }
+    .nav-anchor { display: none; } /* 앵커용 가상 요소 */
     </style>
     
     <script>
@@ -249,8 +274,9 @@ st.markdown("""
     </script>
 """, unsafe_allow_html=True)
 
-# Header & Nav
+# Header & Nav (Sticky Container)
 with st.container():
+    st.markdown('<div class="nav-anchor"></div>', unsafe_allow_html=True) # Sticky를 위한 앵커
     col_logo, col_nav = st.columns([1.8, 4], vertical_alignment="center")
     with col_logo:
         logo_path = os.path.join(os.path.dirname(__file__), "..", "assets", "MarketingMonster_logo.png")
@@ -264,9 +290,9 @@ with st.container():
             </div>
         """, unsafe_allow_html=True)
     with col_nav:
-        nav_cols = st.columns(5)
-        btns = ["🏠 수집/제어", "📧 이메일", "💬 톡톡", "📸 인스타", "📖 가이드"]
-        pages = ["Shop Search", "Track A", "Track B", "Track C", "Guide"]
+        nav_cols = st.columns(4)
+        btns = ["🏠 수집/제어", "📧 이메일", "📸 인스타", "📖 가이드"]
+        pages = ["Shop Search", "Track A", "Track C", "Guide"]
         for i, (lbl, p) in enumerate(zip(btns, pages)):
             if nav_cols[i].button(lbl, key=f"nav_v5_{p}", use_container_width=True, type="primary" if st.session_state['active_page'] == p else "secondary"):
                 st.session_state['active_page'] = p
@@ -304,10 +330,91 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
     with st.expander(f"⚙️ {cfg_name} 및 템플릿 설정", expanded=True):
         c1, c2 = st.columns(2)
         if track_id == 'A':
-            st.session_state['email_user'] = c1.text_input("Naver 이메일", value=st.session_state.get('email_user',''))
-            st.session_state['email_pw'] = c2.text_input("비밀번호 (앱 암호)", type="password", value=st.session_state.get('email_pw',''))
+            st.warning("⚠️ 발송 전 반드시 [📖 가이드] 메뉴에서 **네이버 SMTP 설정법**을 확인해 주세요!")
+            
+            # --- [NEW] Improved Multi-Profile Management ---
+            profiles = st.session_state.get('email_profiles', {})
+            p_list = list(profiles.keys())
+            
+            c_sel, c_add = st.columns([3, 1])
+            with c_sel:
+                active_p = st.session_state.get('active_email_profile', '')
+                sel_p = st.selectbox("📧 등록된 발송 프로필 선택", options=p_list, 
+                                     index=p_list.index(active_p) if active_p in p_list else None,
+                                     placeholder="발송할 계정을 선택하세요", key="email_profile_selector")
+                if sel_p: st.session_state['active_email_profile'] = sel_p
+
+            with c_add:
+                st.markdown('<div style="margin-top:28px;"></div>', unsafe_allow_html=True)
+                show_add = st.checkbox("➕ 새 계정 추가", value=False if p_list else True)
+
+            if show_add:
+                with st.container(border=True):
+                    st.markdown("**✨ 새로운 발송 계정 등록**")
+                    c1, c2 = st.columns(2)
+                    new_id = c1.text_input("발송용 이메일 ID", placeholder="example@naver.com", key="new_email_id_v2")
+                    new_pw = c2.text_input("비밀번호 (앱 암호)", type="password", key="new_email_pw_v2")
+                    
+                    # Auto-detect SMTP
+                    def_smtp, def_port = "smtp.naver.com", 465
+                    if "@gmail.com" in new_id.lower(): def_smtp, def_port = "smtp.gmail.com", 465
+                    elif "@daum.net" in new_id.lower() or "@hanmail.net" in new_id.lower(): def_smtp, def_port = "smtp.daum.net", 465
+                    elif "@naver.com" in new_id.lower(): def_smtp, def_port = "smtp.naver.com", 465
+                    
+                    sc1, sc2 = st.columns(2)
+                    sc1.text_input("SMTP 서버 (자동 감지)", value=def_smtp, disabled=True, key="auto_smtp")
+                    sc2.number_input("SMTP 포트 (자동 감지)", value=def_port, disabled=True, key="auto_port")
+                    
+                    if st.button("💾 이 계정 저장하기", use_container_width=True):
+                        if new_id and new_pw:
+                            profiles[new_id] = {"pw": new_pw, "smtp": def_smtp, "port": def_port}
+                            st.session_state['email_profiles'] = profiles
+                            st.session_state['active_email_profile'] = new_id
+                            save_templates()
+                            st.success(f"'{new_id}' 계정이 등록되었습니다.")
+                            time.sleep(1)
+                            st.rerun()
+                        else: st.error("ID와 비밀번호를 입력해 주세요.")
+            
+            # Show selected profile info
+            active_p = st.session_state.get('active_email_profile', '')
+            if active_p and active_p in profiles:
+                p_info = profiles[active_p]
+                with st.container(border=True):
+                    c_info, c_manage = st.columns([4, 1.2], vertical_alignment="center")
+                    c_info.info(f"✅ **발송 대기:** `{active_p}` ({p_info['smtp']})")
+                    
+                    # [FIXED] Toggle button label based on state
+                    is_open = st.session_state.get(f'show_manage_{active_p}', False)
+                    btn_label = "❌ 관리창 닫기" if is_open else "🛠️ 계정 관리"
+                    if c_manage.button(btn_label, key=f"btn_manage_{active_p}", use_container_width=True):
+                        st.session_state[f'show_manage_{active_p}'] = not is_open
+                        st.rerun()
+                    
+                    if is_open:
+                        st.markdown("---")
+                        c_pw, c_btn = st.columns([3, 1], vertical_alignment="bottom")
+                        new_pw_edit = c_pw.text_input("🔑 비밀번호(앱 암호) 수정", value=p_info['pw'], type="password", key=f"edit_pw_{active_p}")
+                        if c_btn.button("💾 저장", key=f"save_pw_{active_p}", use_container_width=True):
+                            profiles[active_p]['pw'] = new_pw_edit
+                            st.session_state['email_profiles'] = profiles
+                            save_templates()
+                            st.success("비밀번호가 수정되었습니다.")
+                            st.session_state[f'show_manage_{active_p}'] = False
+                            time.sleep(0.5)
+                            st.rerun()
+                        
+                        if st.button("🗑️ 이 프로필 영구 삭제", use_container_width=True, key=f"del_p_{active_p}", type="secondary"):
+                            del profiles[active_p]
+                            st.session_state['email_profiles'] = profiles
+                            st.session_state['active_email_profile'] = ""
+                            save_templates()
+                            st.rerun()
+
+            st.markdown("---")
             st.session_state['tpl_A']['subject'] = st.text_input("메일 제목", value=st.session_state['tpl_A']['subject'])
             st.session_state['tpl_A']['body'] = st.text_area("본문 ({상호명} 치환)", value=st.session_state['tpl_A']['body'], height=200)
+
         elif track_id == 'B':
             st.session_state['naver_user'] = c1.text_input("Naver ID", value=st.session_state.get('naver_user',''))
             st.session_state['naver_pw'] = c2.text_input("비밀번호", type="password", value=st.session_state.get('naver_pw',''))
@@ -319,33 +426,122 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
         
         if st.button("설정 및 템플릿 저장", key=f"save_{track_id}", use_container_width=True): save_templates()
 
-    t_df = df_in[df_in[col_filter].notna() & (df_in[col_filter] != "")].copy()
+    # [DIAGNOSIS] Show DB status to user
+    # --- [1] Data Loading & Variable Initialization ---
+    df_fresh = load_local_data()
+    total_db_rows = len(df_fresh)
+    db_path = config.LOCAL_DB_PATH
+    
+    # Ensure t_df is ALWAYS defined
+    if not df_fresh.empty and col_filter in df_fresh.columns:
+        t_df = df_fresh[df_fresh[col_filter].notna() & (df_fresh[col_filter] != "")].copy()
+    else:
+        t_df = pd.DataFrame()
+    
     if not t_df.empty:
-        st.markdown(f"**대상 리스트 ({len(t_df)}건)**")
-        t_df['선택'] = [st.session_state[f'sel_track_{track_id}'].get(i, False) for i in t_df.index]
-        edited = st.data_editor(t_df[['선택', '상호명', col_filter, '주소']], hide_index=True, use_container_width=True)
-        # [FIXED] Use direct index 'i' instead of positional 't_df.index[i]' to avoid IndexError
-        for i, row in edited.iterrows(): 
-            st.session_state[f'sel_track_{track_id}'][i] = row['선택']
+        # [NEW] Smart Toggle Selection Button
+        sel_col1, sel_col2, sel_spacer = st.columns([1, 1.5, 4])
+        if sel_col1.button("🔄 데이터 갱신", key=f"refresh_{track_id}", use_container_width=True):
+            st.session_state[f'sel_track_{track_id}'] = {} # Reset selection
+            st.rerun()
+
+        # Decide label based on current selection
+        track_sel_map = st.session_state.get(f'sel_track_{track_id}', {})
+        selected_count_pre = sum(1 for i in t_df.index if track_sel_map.get(str(i), False))
         
-        if st.button(f"🚀 {label} 엔진 가동", type="primary", use_container_width=True):
+        all_selected = (selected_count_pre == len(t_df)) and (len(t_df) > 0)
+        btn_label = "⬜ 전체 선택 해제" if all_selected else "✅ 전체 선택"
+        
+        if sel_col2.button(btn_label, key=f"toggle_all_{track_id}", use_container_width=True):
+            new_state = not all_selected
+            for i in t_df.index: st.session_state[f'sel_track_{track_id}'][str(i)] = new_state
+            st.rerun()
+
+        # [REFIXED] Use placeholder to avoid "one-step behind" count issue
+        header_pos = st.empty()
+        st.caption(f"💡 {col_filter} 정보가 있는 업체만 표시됩니다. (전체 {total_db_rows}건 중 {len(t_df)}건)")
+
+        t_df['선택'] = [st.session_state[f'sel_track_{track_id}'].get(str(i), False) for i in t_df.index]
+        edited = st.data_editor(t_df[['선택', '상호명', col_filter, '주소']], 
+                                hide_index=True, 
+                                use_container_width=True, 
+                                key=f"editor_v2_{track_id}")
+        
+        # [FIXED] Detect changes and sync back to session state immediately
+        # This prevents the "disappearing checkbox" issue by ensuring the session state matches the UI
+        current_sel = list(edited['선택'])
+        old_sel = list(t_df['선택'])
+        if current_sel != old_sel:
+            for idx, val in zip(t_df.index, current_sel):
+                st.session_state[f'sel_track_{track_id}'][str(idx)] = val
+            st.rerun() # Force rerun to update the count header and stabilize UI
+            
+        # Update header placeholder with NEW count (from edited dataframe)
+        new_count = len(edited[edited['선택'] == True])
+        header_pos.markdown(f"**🎯 대상 리스트 ({len(t_df)}건 중 {new_count}건 선택됨)**")
+        
+        # [REFIXED] Start Button & Dashboard Layout
+        btn_label_final = "📧 이메일 발송 시작" if track_id == 'A' else "🚀 DM 발송 시작"
+        if st.button(btn_label_final, type="primary", use_container_width=True):
             selected = t_df[t_df['선택'] == True]
-            if selected.empty: st.warning("선택된 대상이 없습니다.")
+            if selected.empty: 
+                st.warning("선택된 대상이 없습니다.")
             else:
                 if track_id == 'A':
-                    u, p = st.session_state['email_user'], st.session_state['email_pw']
-                    if not u or not p: st.error("계정을 설정해 주세요.")
+                    active_p = st.session_state.get('active_email_profile', '')
+                    profiles = st.session_state.get('email_profiles', {})
+                    if not active_p or active_p not in profiles:
+                        st.error("발송 계정 프로필을 먼저 선택하거나 등록해 주세요.")
                     else:
+                        p_info = profiles[active_p]
+                        u, p = active_p, p_info['pw']
+                        smtp_host = p_info['smtp']
+                        
+                        st.markdown("---")
+                        # --- [NEW] Live Status Dashboard (Inside Button Block) ---
+                        status_cols = st.columns(3)
+                        total_slot = status_cols[0].empty()
+                        success_slot = status_cols[1].empty()
+                        fail_slot = status_cols[2].empty()
+                        
+                        log_container = st.container(border=True)
+                        log_container.caption("📝 발송 실시간 로그")
+                        log_placeholder = log_container.empty()
+                        log_text = ""
+                        
                         success = 0
+                        fail = 0
                         prog = st.progress(0)
+                        
                         for idx, (_, s) in enumerate(selected.iterrows()):
-                            ok, _ = send_email(u, p, s['이메일'], st.session_state['tpl_A']['subject'], format_tpl(st.session_state['tpl_A']['body'], s['상호명']))
-                            if ok: success += 1
+                            total_slot.metric("🎯 총 대상", f"{len(selected)}건")
+                            success_slot.metric("✅ 성공", f"{success}건")
+                            fail_slot.metric("❌ 실패", f"{fail}건")
+                            
+                            current_target = s['상호명']
+                            temp_log = f"⏳ `{current_target}` 발송 중...\n" + log_text
+                            log_placeholder.code(temp_log)
+                            
+                            ok, err = send_email(u, p, s['이메일'], 
+                                               st.session_state['tpl_A']['subject'], 
+                                               format_tpl(st.session_state['tpl_A']['body'], s['상호명']), 
+                                               smtp_server=smtp_host)
+                            
+                            if ok:
+                                success += 1
+                                log_text = f"✅ `{current_target}` 발송 성공\n" + log_text
+                            else:
+                                fail += 1
+                                log_text = f"❌ `{current_target}` 발송 실패 ({err})\n" + log_text
+                            
+                            log_placeholder.code(log_text)
                             prog.progress((idx+1)/len(selected))
-                        st.success(f"{success}건 발송 성공")
+                            
+                        st.success(f"🎊 모든 작업이 완료되었습니다! (성공: {success}, 실패: {fail})")
                 else:
                     st.info("DM 엔진은 백그라운드 subprocess로 실행됩니다. (구현 가이드 준수)")
-    else: st.info(f"{col_filter} 정보가 포함된 데이터가 없습니다.")
+    else: 
+        st.info(f"{col_filter} 정보가 포함된 데이터가 없습니다.")
 
 if st.session_state['active_page'] == 'Shop Search':
     # --- 1. Settings Panel (Top) ---
@@ -600,34 +796,45 @@ if st.session_state['active_page'] == 'Shop Search':
         st.info("데이터가 없습니다.")
 
 elif st.session_state['active_page'] == 'Track A': render_track('A', '이메일 마케팅', '이메일', '메일 서버', df)
-elif st.session_state['active_page'] == 'Track B': render_track('B', '네이버 톡톡 DM', '톡톡링크', '네이버 계정', df)
-elif st.session_state['active_page'] == 'Track C': render_track('C', '인스타그램 DM', '인스타', '인스타 계정', df)
+elif st.session_state['active_page'] == 'Track C': render_track('C', '인스타 DM 마케팅', '인스타ID', 'DM 서버', df)
 elif st.session_state['active_page'] == 'Guide':
     st.markdown('<div class="section-title">📖 NPlace-DB 공식 가이드</div>', unsafe_allow_html=True)
     
     with st.container(border=True):
+        st.subheader("📧 이메일 마케팅 설정 (네이버 SMTP)")
         st.markdown("""
-        ### 🖥️ PC 권장 사양 및 환경
-        NPlace-DB는 실제 브라우저를 구동하여 수집하는 방식으로, 안정적인 동작을 위해 다음 사양을 권장합니다.
+        이메일 발송 기능을 사용하려면 본인의 네이버 계정에서 **SMTP 사용 설정**과 **앱 암호 발급**이 반드시 필요합니다.
         
-        *   **CPU**: Intel Core i5 / AMD Ryzen 5 이상 (멀티 프로세싱 권장)
-        *   **RAM**: 8GB 이상 (16GB 권장, 브라우저 다중 실행 시 메모리 사용량이 증가합니다.)
-        *   **OS**: Windows 10/11 (64bit)
-        *   **Network**: 유선 랜 연결 권장 (무선 WiFi 사용 시 끊김 현상으로 인해 수집 누락이 발생할 수 있습니다.)
-        *   **Browser**: 최신 버전의 Google Chrome 또는 Microsoft Edge가 설치되어 있어야 합니다.
+        #### **1단계: 네이버 메일 SMTP 설정 활성화**
+        1. PC에서 [네이버 메일]에 접속합니다.
+        2. 왼쪽 메뉴 하단의 **[환경설정]** (톱니바퀴 아이콘)을 클릭합니다.
+        3. 상단 탭에서 **[POP3/IMAP 설정]**을 클릭합니다.
+        4. **[IMAP/SMTP 설정]** 탭으로 이동합니다.
+        5. 'IMAP/SMTP 사용' 항목을 **[사용함]**으로 변경하고 확인을 누릅니다.
+        
+        *   💡 **안내**: SMTP 서버/포트 정보는 네이버 기본값(`smtp.naver.com` / `465`)으로 이미 세팅되어 있으니 **그대로 두시면 됩니다.**
+        
+        #### **2단계: 네이버 앱 암호 발급 (보안)**
+        일반 비밀번호는 보안상 차단될 수 있으므로, 반드시 '앱 암호'를 생성해야 합니다.
+        1. [네이버 내정보] -> [보안설정] 메뉴로 이동합니다.
+        2. **[2단계 인증]** 항목 우측의 **[관리]** 버튼을 클릭합니다.
+        3. 이동한 페이지의 **맨 아래쪽**으로 스크롤을 내리면 **[비밀번호 관리 (앱 암호)]** 섹션이 나타납니다.
+        4. 종류 선택에서 '직접 입력'을 누르고 **'마케팅몬스터'** 또는 **'NPlaceDB'**라고 입력한 뒤 **[생성]**을 클릭합니다. (하이픈 '-' 등 특수문자는 제외해 주세요.)
+        *   💡 여기서 입력하는 이름은 본인 확인용이며, **메일을 받는 상대방에게는 노출되지 않습니다.**
+        5. 생성된 **16자리 영문 앱 암호**를 복사하여 프로그램의 '비밀번호' 칸에 입력하세요.
         
         ---
-        
-        ### 🔍 수집 필터 상세 설명
-        1.  **전체(상호/업종/메뉴 포함)**: 네이버 검색 결과 리스트에 노출되는 모든 업체를 수집합니다. 네이버 인공지능이 키워드와 연관이 있다고 판단한 모든 데이터(메뉴 이름, 업체 설명 등)가 포함됩니다.
-        2.  **상호명 일치**: 수집된 데이터 중 상호명에 설정한 '필터 키워드'가 포함된 경우만 최종 저장합니다.
-        3.  **업종명 일치**: 수집된 데이터 중 네이버가 정의한 업종(카테고리)에 '필터 키워드'가 포함된 경우만 최종 저장합니다.
-        
-        ---
-        
-        ### ☕ 안전 휴식(Safety Break) 안내
-        프로그램은 네이버의 자동 수집 차단 시스템을 회피하기 위해 다음과 같이 휴식합니다.
-        *   키워드 5~7개 검색 시마다 약 **1분 10초** 휴식.
-        *   업체 10곳 수집 시마다 약 **1분 10초** 휴식.
-        *   해당 시간에는 엔진이 멈춘 것처럼 보일 수 있으나, 아이피 차단 방지를 위한 정상적인 동작입니다.
+        #### **기타 SMTP 설정 안내**
+        *   **Gmail**: 구글 계정 설정에서 '앱 비밀번호' 생성이 필요하며, SMTP 서버는 `smtp.gmail.com`, 포트는 `465`를 사용합니다.
+        *   **Outlook**: `smtp-mail.outlook.com` 서버를 사용합니다.
         """)
+        
+        st.divider()
+        st.subheader("🖥️ PC 권장 사양 및 환경")
+        st.markdown("""
+        *   **CPU**: Intel Core i5 / AMD Ryzen 5 이상
+        *   **RAM**: 8GB 이상 (16GB 권장)
+        *   **OS**: Windows 10/11 (64bit)
+        *   **Browser**: 최신 버전의 Google Chrome 설치 필수
+        """)
+
