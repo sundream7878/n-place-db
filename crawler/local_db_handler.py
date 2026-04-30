@@ -17,7 +17,7 @@ class LocalDBHandler:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
     def get_connection(self):
-        return sqlite3.connect(self.db_path)
+        return sqlite3.connect(self.db_path, timeout=20)
 
     def init_db(self):
         """Initializes the SQLite database and creates the shops table."""

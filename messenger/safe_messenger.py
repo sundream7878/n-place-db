@@ -11,7 +11,15 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import config
 
 # Logging setup
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+LOG_FILE = os.path.join(os.path.dirname(__file__), '..', 'instagram_dm.log')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Persistent Context Path
@@ -495,15 +503,21 @@ async def main(target_list_json, message, method="both", naver_creds=None, insta
             # --- Instagram DM ---
             if method == "insta" or (method == "both" and not success):
                 if shop.get('인스타'):
-                    success = await send_instagram_dm(page, shop['인스타'], message, image_path=image_path)
+                    # Personalized message replacement
+                    personalized_msg = message.replace("{상호명}", shop.get('상호명', '원장님'))
+                    success = await send_instagram_dm(page, shop['인스타'], personalized_msg, image_path=image_path)
             
             if success:
-                wait_time = random.uniform(60, 120) 
-                logger.info(f"Waiting {wait_time:.1f}s before next send...")
-                await asyncio.sleep(wait_time)
+                if idx < len(targets) - 1:
+                    wait_time = random.uniform(60, 120) 
+                    logger.info(f"Waiting {wait_time:.1f}s before next send...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.info("Last target reached. No wait needed.")
             else:
                 logger.warning(f"Failed to send to {shop['상호명']} via {method}")
-                await human_delay(5, 10)
+                if idx < len(targets) - 1:
+                    await human_delay(5, 10)
                 
         await browser.close()
         logger.info("Auto-messenger task complete.")
