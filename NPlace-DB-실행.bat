@@ -1,9 +1,9 @@
 @echo off
 setlocal
-title N-Place-DB Pro Launcher
+title NPlace-DB Launcher
 
 echo ======================================================
-echo   N-Place-DB Pro 프로그램 시작 중...
+echo   NPlace-DB 프로그램 시작 중...
 echo ======================================================
 echo.
 
@@ -14,8 +14,8 @@ if %errorlevel% neq 0 (
     echo [!] 일부 시스템에서 Visual C++ 런타임이 필요할 수 있습니다.
     echo [!] 프로그램 실행에 전용 DLL을 포함시켰으나, 오류 발생 시 아래 파일을 설치해 주세요.
     
-    if exist "dependencies\vc_redist.x64.exe" (
-        echo [안내] dependencies 폴더의 vc_redist.x64.exe를 설치하면 해결됩니다.
+    if exist "_internal\vc_redist.x64.exe" (
+        echo [안내] _internal 폴더의 vc_redist.x64.exe를 설치하면 해결됩니다.
     ) else (
         echo [안내] 수동 설치 링크: https://aka.ms/vs/17/release/vc_redist.x64.exe
     )
@@ -31,10 +31,10 @@ echo.
 echo [2/2] 프로그램을 실행하는 중입니다...
 
 :: 실행 파일 경로 설정 (dist 폴더 내의 실행 파일 위치에 맞게 조정)
-if exist "Place-DB-Pro.exe" (
-    start "" "Place-DB-Pro.exe"
-) else if exist "dist\Place-DB-Pro\Place-DB-Pro.exe" (
-    start "" "dist\Place-DB-Pro\Place-DB-Pro.exe"
+if exist "NPlace-DB.exe" (
+    start "" "NPlace-DB.exe"
+) else if exist "dist\NPlace-DB\NPlace-DB.exe" (
+    start "" "dist\NPlace-DB\NPlace-DB.exe"
 ) else (
     echo [오류] 실행 파일을 찾을 수 없습니다.
     echo 폴더 구성을 확인해 주세요.

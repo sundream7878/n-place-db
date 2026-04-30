@@ -14,7 +14,7 @@ if %errorlevel% neq 0 (
 :: --icon: Add custom icon if available
 :: --add-data: Include dependencies or default config
 python -m PyInstaller -y --onedir --noconsole ^
-    --name "Place-DB-Pro" ^
+    --name "NPlace-DB" ^
     --add-data "crawler;crawler" ^
     --add-data "data;data" ^
     --add-data "admin_dashboard;admin_dashboard" ^
@@ -22,6 +22,7 @@ python -m PyInstaller -y --onedir --noconsole ^
     --add-data "messenger;messenger" ^
     --add-data "step1_refined_crawler.py;." ^
     --add-data "engine_recover_missing.py;." ^
+    --add-data "NPlace-DB-실행.bat;." ^
     --hidden-import customtkinter ^
     --hidden-import wmi ^
     --hidden-import openpyxl ^
@@ -36,5 +37,5 @@ python -m PyInstaller -y --onedir --noconsole ^
     gui_main.py
 
 echo.
-echo [OK] Build Complete! Check the 'dist\N-Place-DB-Pro-Final' folder for N-Place-DB-Pro-Final.exe.
+echo [OK] Build Complete! Check the 'dist\NPlace-DB' folder for NPlace-DB.exe.
 
