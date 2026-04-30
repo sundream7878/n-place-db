@@ -22,7 +22,6 @@ python -m PyInstaller -y --onedir --noconsole ^
     --add-data "messenger;messenger" ^
     --add-data "step1_refined_crawler.py;." ^
     --add-data "engine_recover_missing.py;." ^
-    --add-data "NPlace-DB-실행.bat;." ^
     --hidden-import customtkinter ^
     --hidden-import wmi ^
     --hidden-import openpyxl ^

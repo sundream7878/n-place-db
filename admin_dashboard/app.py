@@ -334,9 +334,12 @@ with st.container():
         if os.path.exists(logo_path):
             st.image(logo_path, width=180)
         
-        st.markdown("""
+        st.markdown(f"""
             <div style="display:flex; flex-direction:column; gap:0px; margin-top:-10px;">
-                <div style="font-size:2.2rem; font-weight:900; color:#00E676; letter-spacing:-1.5px;">NPlace_DB</div>
+                <div style="display:flex; align-items:baseline; gap:10px;">
+                    <div style="font-size:2.2rem; font-weight:900; color:#00E676; letter-spacing:-1.5px;">NPlace_DB</div>
+                    <div style="font-size:0.85rem; font-weight:700; color:#94A3B8; background:#F8FAFC; padding:2px 8px; border-radius:6px; border:1px solid #E2E8F0; margin-bottom:5px;">v{config.CURRENT_VERSION}</div>
+                </div>
                 <div style="font-size:0.8rem; color:#64748B; font-weight:800; letter-spacing:0.05em; margin-top:-5px;">대한민국 NO.1 마케팅 솔루션</div>
             </div>
         """, unsafe_allow_html=True)
