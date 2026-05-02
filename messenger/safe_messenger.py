@@ -508,6 +508,7 @@ async def main(target_list_json, message, method="both", naver_creds=None, insta
                     success = await send_instagram_dm(page, shop['인스타'], personalized_msg, image_path=image_path)
             
             if success:
+                logger.info(f"[RESULT] | Success | {shop['상호명']} | {shop.get('인스타', 'NoInsta')}")
                 if idx < len(targets) - 1:
                     wait_time = random.uniform(60, 120) 
                     logger.info(f"Waiting {wait_time:.1f}s before next send...")
@@ -515,7 +516,8 @@ async def main(target_list_json, message, method="both", naver_creds=None, insta
                 else:
                     logger.info("Last target reached. No wait needed.")
             else:
-                logger.warning(f"Failed to send to {shop['상호명']} via {method}")
+                err_msg = "Unknown error" # Could be refined if needed
+                logger.warning(f"[RESULT] | Fail | {shop['상호명']} | {shop.get('인스타', 'NoInsta')} | {err_msg}")
                 if idx < len(targets) - 1:
                     await human_delay(5, 10)
                 

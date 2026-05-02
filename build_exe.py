@@ -11,8 +11,8 @@ def build():
     
     # 2. PyInstaller Arguments
     args = [
-        'gui_main.py',              # Entry point
-        '--name=CafeMonster_PlaceDB_Pro_v1.0',     # [가이드 준수] PlaceDB 식별자 사용
+        'NPlace_DB_Launcher.py',              # Entry point
+        '--name=NPlace-DB',     # [가이드 준수] PlaceDB 식별자 사용
 
         '--onefile',                 # Pack into single EXE
         '--noconsole',               # Hide console window (Web UI will handle the display)
@@ -37,7 +37,7 @@ def build():
     # 3. Execute Build
     try:
         PyInstaller.__main__.run(args)
-        print("\n✅ 빌드 완료! 'dist/CafeMonster_PlaceDB_Pro_v1.0.exe' 파일을 확인하세요.")
+        print("\n✅ 빌드 완료! 'dist/NPlace-DB.exe' 파일을 확인하세요.")
 
     except Exception as e:
         print(f"\n❌ 빌드 중 오류 발생: {e}")

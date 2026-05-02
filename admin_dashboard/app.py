@@ -121,7 +121,9 @@ def load_local_data():
     mapping = {
         "name": "상호명", "address": "주소", "phone": "번호", 
         "email": "이메일", "instagram_handle": "인스타", 
-        "talk_url": "톡톡링크", "detail_url": "플레이스링크"
+        "talk_url": "톡톡링크", "detail_url": "플레이스링크",
+        "last_result_email": "결과(E)", "last_msg_email": "로그(E)",
+        "last_result_insta": "결과(I)", "last_msg_insta": "로그(I)"
     }
     df = df.rename(columns=mapping)
     return df
@@ -521,10 +523,23 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
         st.caption(f"💡 {col_filter} 정보가 있는 업체만 표시됩니다. (전체 {total_db_rows}건 중 {len(t_df)}건)")
 
         t_df['선택'] = [st.session_state[f'sel_track_{track_id}'].get(str(i), False) for i in t_df.index]
-        edited = st.data_editor(t_df[['선택', '상호명', col_filter, '주소']], 
-                                hide_index=True, 
-                                use_container_width=True, 
-                                key=f"editor_v2_{track_id}")
+        
+        # Determine columns to show based on track
+        display_cols = ['선택', '상호명', col_filter, '주소']
+        if track_id == 'A': display_cols += ['결과(E)', '로그(E)']
+        else: display_cols += ['결과(I)', '로그(I)']
+        
+        # [NEW] Versioned Key to force UI refresh with fresh DB data
+        # This prevents the "disappearing results" issue after rerun
+        editor_version = st.session_state.get(f'editor_ver_{track_id}', 0)
+        
+        # [NEW] Table Placeholder for real-time updates
+        table_placeholder = st.empty()
+        with table_placeholder:
+            edited = st.data_editor(t_df[display_cols], 
+                                    hide_index=True, 
+                                    use_container_width=True, 
+                                    key=f"editor_v{editor_version}_{track_id}")
         
         # [FIXED] Detect changes and sync back to session state immediately
         # This prevents the "disappearing checkbox" issue by ensuring the session state matches the UI
@@ -561,10 +576,20 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
         # [REFIXED] Start Button & Dashboard Layout
         btn_label_final = "📧 이메일 발송 시작" if track_id == 'A' else "📸 인스타 발송 시작"
         if st.button(btn_label_final, type="primary", use_container_width=True):
-            selected = t_df[t_df['선택'] == True]
-            if selected.empty: 
+            selected_all = t_df[t_df['선택'] == True]
+            
+            # [SMART RETRY] Filter out already successful items
+            res_col = '결과(E)' if track_id == 'A' else '결과(I)'
+            selected = selected_all[selected_all[res_col] != 'Success']
+            skipped_count = len(selected_all) - len(selected)
+            
+            if selected_all.empty: 
                 st.warning("선택된 대상이 없습니다.")
+            elif selected.empty and skipped_count > 0:
+                st.info(f"✅ 선택된 {skipped_count}건 모두 이미 발송 성공 상태입니다. (재발송 불필요)")
             else:
+                if skipped_count > 0:
+                    st.toast(f"💡 이미 성공한 {skipped_count}건을 제외하고 발송을 시작합니다.")
                 active_p = st.session_state.get(a_key, '')
                 profiles = st.session_state.get(p_key, {})
                 if not active_p or active_p not in profiles:
@@ -620,6 +645,18 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
                                                format_tpl(st.session_state['tpl_A']['body'], s['상호명']), 
                                                smtp_server=smtp_host)
                             
+                            # [NEW] Update DB Real-time using ID
+                            db_h = DBHandler(config.LOCAL_DB_PATH)
+                            db_h.update_send_status(s['id'], 'email', 
+                                                  '성공' if ok else '실패', 
+                                                  '발송완료' if ok else err)
+                            
+                            # [NEW] Update Table UI Real-time
+                            t_df.loc[s.name, '결과(E)'] = '성공' if ok else '실패'
+                            t_df.loc[s.name, '로그(E)'] = '발송완료' if ok else err
+                            with table_placeholder:
+                                st.data_editor(t_df[display_cols], hide_index=True, use_container_width=True, key=f"editor_live_A_{idx}_{track_id}")
+                            
                             if ok: success += 1
                             else: fail += 1
                             
@@ -638,6 +675,12 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
                         
                         st.session_state[res_key]['active'] = False
                         st.success(f"🎊 모든 이메일 작업이 완료되었습니다! (성공: {success}, 실패: {fail})")
+                        st.toast("✅ 데이터베이스 동기화 완료")
+                        
+                        # Increment editor version to force fresh load from DB
+                        st.session_state[f'editor_ver_{track_id}'] = st.session_state.get(f'editor_ver_{track_id}', 0) + 1
+                        
+                        time.sleep(2) # Give user time to see the success message
                         st.rerun() 
                     else:
                         # --- Track C: Instagram DM (Real Engine Connection) ---
@@ -669,16 +712,35 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
                                             l_str = line.strip()
                                             if not l_str: continue
                                             
-                                            if "flow completed successfully" in l_str: success += 1
-                                            elif "Failed to send" in l_str or "Error" in l_str or "TIMEOUT" in l_str: fail += 1
+                                            # [NEW] Update DB Real-time for Insta
+                                            if "[RESULT]" in l_str:
+                                                parts = [p.strip() for p in l_str.split("|")]
+                                                if len(parts) >= 4:
+                                                    status = parts[1] # Success or Fail
+                                                    target_name = parts[2]
+                                                    err_info = parts[4] if len(parts) > 4 else "발송완료"
+                                                    
+                                                    if status == "Success": success += 1
+                                                    else: fail += 1
+                                                    
+                                                    # Find shop in selected to get detail_url
+                                                    match_row = selected[selected['상호명'] == target_name]
+                                                    if not match_row.empty:
+                                                        s_id = match_row.iloc[0]['id']
+                                                        db_h = DBHandler(config.LOCAL_DB_PATH)
+                                                        db_h.update_send_status(s_id, 'insta', status, err_info)
+                                                        
+                                                        # [NEW] Update Table UI Real-time for Insta
+                                                        t_df.loc[match_row.index[0], '결과(I)'] = '성공' if status == 'Success' else '실패'
+                                                        t_df.loc[match_row.index[0], '로그(I)'] = err_info
+                                                        with table_placeholder:
+                                                            st.data_editor(t_df[display_cols], hide_index=True, use_container_width=True, key=f"editor_live_I_{success+fail}_{track_id}")
                                             
-                                            # Update Session State
                                             st.session_state[res_key]['success'] = success
                                             st.session_state[res_key]['fail'] = fail
                                             log_text = f"⚙️ {l_str}\n" + log_text
                                             st.session_state[res_key]['log'] = log_text
                                             
-                                            # Update UI Slots
                                             total_count = len(selected)
                                             curr_idx = min(success + fail, total_count)
                                             pct = curr_idx / total_count if total_count > 0 else 0
@@ -695,7 +757,43 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
                         st.session_state[res_key]['active'] = False
                         st.session_state[res_key]['log'] = log_text
                         st.success(f"🎊 모든 작업이 완료되었습니다! (성공: {success}, 실패: {fail})")
+                        st.toast("✅ 데이터베이스 동기화 완료")
+                        
+                        # Increment editor version to force fresh load from DB
+                        st.session_state[f'editor_ver_{track_id}'] = st.session_state.get(f'editor_ver_{track_id}', 0) + 1
+                        
+                        time.sleep(2)
                         st.rerun() # Refresh to show permanent results
+    
+        # --- [REFINED] Global Reset Feature (Inside Expander to reduce clutter) ---
+        st.markdown("---")
+        with st.expander("🛠️ 데이터 및 발송 결과 관리"):
+            c1, c2 = st.columns([3, 1])
+            c1.caption("⚠️ 모든 업체의 발송 결과(성공/실패)와 로그를 비우고 처음부터 다시 시작하려면 리셋하세요.")
+            if c2.button("🧹 발송 결과 전체 초기화", use_container_width=True, key=f"btn_reset_{track_id}", type="secondary"):
+                # Use direct SQL to be 100% sure even if class import is cached/stale
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(config.LOCAL_DB_PATH)
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE shops SET last_result_email = NULL, last_msg_email = NULL, last_result_insta = NULL, last_msg_insta = NULL")
+                    conn.commit()
+                    conn.close()
+                    
+                    # Force UI Refresh
+                    st.session_state[f'editor_ver_A'] = st.session_state.get(f'editor_ver_A', 0) + 1
+                    st.session_state[f'editor_ver_C'] = st.session_state.get(f'editor_ver_C', 0) + 1
+                    
+                    # Clear counters and logs in session state
+                    for k in list(st.session_state.keys()):
+                        if k.startswith("job_res_"):
+                            st.session_state[k] = {"total": 0, "success": 0, "fail": 0, "log": "", "active": False}
+                    
+                    st.success("✅ 모든 발송 결과와 카운트가 초기화되었습니다.")
+                    time.sleep(1.5)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 초기화 중 오류 발생: {e}")
     else: 
         st.info(f"{col_filter} 정보가 포함된 데이터가 없습니다.")
 

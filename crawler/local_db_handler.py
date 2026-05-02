@@ -25,29 +25,61 @@ class LocalDBHandler:
             with conn:
                 cursor = conn.cursor()
                 # 1. Create shops table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS shops (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT,
-                    phone TEXT,
-                    detail_url TEXT UNIQUE,
-                    address TEXT,
-                    latitude REAL,
-                    longitude REAL,
-                    email TEXT,
-                    instagram_handle TEXT,
-                    naver_blog_id TEXT,
-                    talk_url TEXT,
-                    owner_name TEXT,
-                    keyword TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            # 2. Explicit index for faster lookup on detail_url (Rule 3.1)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_detail_url ON shops (detail_url)")
-            conn.commit()
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS shops (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT,
+                        phone TEXT,
+                        detail_url TEXT UNIQUE,
+                        address TEXT,
+                        latitude REAL,
+                        longitude REAL,
+                        email TEXT,
+                        instagram_handle TEXT,
+                        naver_blog_id TEXT,
+                        talk_url TEXT,
+                        owner_name TEXT,
+                        keyword TEXT,
+                        last_result_email TEXT,
+                        last_msg_email TEXT,
+                        last_result_insta TEXT,
+                        last_msg_insta TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # [NEW] Check and Add columns if they don't exist (for existing DBs)
+                cursor.execute("PRAGMA table_info(shops)")
+                existing_cols = [row[1] for row in cursor.fetchall()]
+                new_cols = [
+                    ("last_result_email", "TEXT"), ("last_msg_email", "TEXT"),
+                    ("last_result_insta", "TEXT"), ("last_msg_insta", "TEXT")
+                ]
+                for col_name, col_type in new_cols:
+                    if col_name not in existing_cols:
+                        cursor.execute(f"ALTER TABLE shops ADD COLUMN {col_name} {col_type}")
+                
+                # 2. Explicit index for faster lookup on detail_url (Rule 3.1)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_detail_url ON shops (detail_url)")
+                conn.commit()
                 
         logger.info(f"Local SQLite DB initialized at {self.db_path}")
+
+    def update_send_status(self, shop_id: int, track: str, result: str, msg: str) -> bool:
+        """Updates the sending status and message for a specific shop using its ID."""
+        col_res = "last_result_email" if track == 'email' else "last_result_insta"
+        col_msg = "last_msg_email" if track == 'email' else "last_msg_insta"
+        try:
+            with contextlib.closing(self.get_connection()) as conn:
+                with conn:
+                    cursor = conn.cursor()
+                    cursor.execute(f"UPDATE shops SET {col_res} = ?, {col_msg} = ? WHERE id = ?", 
+                                 (result, msg, shop_id))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error updating send status: {e}")
+            return False
 
     def insert_shop(self, data: Dict) -> bool:
         """Inserts a single shop record, avoiding duplicates based on detail_url."""
@@ -137,8 +169,24 @@ class LocalDBHandler:
             with contextlib.closing(self.get_connection()) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute("SELECT * FROM shops ORDER BY created_at DESC")
+                cursor.execute("SELECT * FROM shops ORDER BY id DESC")
                 return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error fetching shops from SQLite: {e}")
+            return []
+
+    def reset_all_statuses(self) -> bool:
+        """Clears all sending status columns in the database."""
+        try:
+            with contextlib.closing(self.get_connection()) as conn:
+                with conn:
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE shops SET last_result_email = NULL, last_msg_email = NULL, last_result_insta = NULL, last_msg_insta = NULL")
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error resetting statuses: {e}")
+            return False
         except Exception as e:
             logger.error(f"Error fetching shops from SQLite: {e}")
             return []
