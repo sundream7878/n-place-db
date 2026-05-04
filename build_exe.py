@@ -3,23 +3,26 @@ import os
 import shutil
 
 def build():
-    print("🔨 N-Place-DB Pro 빌드 시작...")
+    print("N-Place-DB Pro Build Start...")
     
-    # 1. Clean previous builds
-    if os.path.exists("build"): shutil.rmtree("build")
-    if os.path.exists("dist"): shutil.rmtree("dist")
+    # 1. Resilient Cleanup
+    try:
+        if os.path.exists("build"): shutil.rmtree("build", ignore_errors=True)
+        if os.path.exists("dist"): shutil.rmtree("dist", ignore_errors=True)
+        print("Cleanup done (ignoring locks).")
+    except Exception as e:
+        print(f"Warning during cleanup: {e}")
     
     # 2. PyInstaller Arguments
     args = [
         'NPlace_DB_Launcher.py',              # Entry point
-        '--name=NPlace-DB',     # [가이드 준수] PlaceDB 식별자 사용
-
-        '--onefile',                 # Pack into single EXE
-        '--noconsole',               # Hide console window (Web UI will handle the display)
-        '--collect-all=streamlit',   # Essential for streamlit apps
+        '--name=NPlace-DB',     # Output name
+        '--onefile',            # Single EXE
+        '--noconsole',          # No console window
+        '--collect-all=streamlit',
         '--collect-all=pycryptodome',
         '--collect-all=customtkinter',
-        '--add-data=admin_dashboard;admin_dashboard', # Include templates/static
+        '--add-data=admin_dashboard;admin_dashboard',
         '--add-data=messenger;messenger',
         '--add-data=crawler;crawler',
         '--add-data=config.py;.',
@@ -37,10 +40,9 @@ def build():
     # 3. Execute Build
     try:
         PyInstaller.__main__.run(args)
-        print("\n✅ 빌드 완료! 'dist/NPlace-DB.exe' 파일을 확인하세요.")
-
+        print("\nBuild Complete! Check 'dist/NPlace-DB.exe'.")
     except Exception as e:
-        print(f"\n❌ 빌드 중 오류 발생: {e}")
+        print(f"\nBuild Failed: {e}")
 
 if __name__ == "__main__":
     build()
