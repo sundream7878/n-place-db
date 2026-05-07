@@ -267,62 +267,64 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
     if not filter_mode: filter_mode = 'all'
     logger.info(f"🔍 Filter Mode: {filter_mode} | Target: {filter_keyword if filter_keyword else 'None'}")
     
-    # Target Keywords (Deep Scan Support)
-    base_keyword = shop_type if shop_type else "" # 기본값 제거
-    
-    if custom_keywords:
-        logger.info(f"🎯 Custom Keywords Provided: {len(custom_keywords)} keywords")
-        keywords = custom_keywords
-    elif target_area:
-        # [MODIFIED] Advanced Target Analysis & Sanitization
-        target_area = str(target_area).strip("[]").replace("'", "").replace('"', "")
-        targets = [t.strip() for t in target_area.split(",") if t.strip()]
-        logger.info(f"🎯 Parsing Multi-Target: {targets}")
-        
-        all_keywords = []
-        for t in targets:
-            # Check if it's "Province District" (e.g., "서울 강남구")
-            if " " in t:
-                parts = t.split()
-                province = parts[0]
-                district = " ".join(parts[1:])
-                
-                if province in config.CITY_MAP and district in config.CITY_MAP[province]:
-                    # 1. Granular District Mode -> Expand to Dong-level
-                    dongs = config.CITY_MAP[province][district]
-                    all_keywords.extend([f"{province} {district} {dong} {base_keyword}" for dong in dongs])
-                    logger.info(f"   + [정밀수집] '{t}' -> {len(dongs)}개 상세 키워드 생성 (동 단위)")
-                else:
-                    all_keywords.append(f"{t} {base_keyword}")
-                    logger.info(f"   + [일반수집] '{t}' (지도 데이터 미매칭)")
-            
-            elif t in config.CITY_MAP:
-                # 2. Whole Province Mode (e.g., "인천") -> Expand ALL districts/dongs
-                prov_keywords = []
-                districts = config.CITY_MAP[t]
-                for dist, dongs in districts.items():
-                    for dong in dongs:
-                        prov_keywords.append(f"{t} {dist} {dong} {base_keyword}")
-                all_keywords.extend(prov_keywords)
-                logger.info(f"   + [전체수집] '{t}' -> {len(prov_keywords)}개 전체 키워드 생성 (도시 전체)")
-            
-            else:
-                # 3. Generic Fallback
-                all_keywords.append(f"{t} {base_keyword}")
-                logger.info(f"   + [개별수집] '{t}'")
-        
-        # Unique list preservation order
-        seen = set()
-        keywords = []
-        for kw in all_keywords:
-            if kw not in seen:
-                keywords.append(kw)
-                seen.add(kw)
-        
-        logger.info(f"📂 최종 수집 대상 키워드: {len(keywords)}개")
-
+    # [NEW] Multi-Keyword Support (Comma separated)
+    if shop_type and "," in shop_type:
+        raw_keywords = [kw.strip() for kw in shop_type.split(",") if kw.strip()]
+        logger.info(f"🌈 Multi-Keyword Mode Detected: {raw_keywords}")
     else:
-        keywords = [f"서울 강남구 {base_keyword}"] 
+        raw_keywords = [shop_type] if shop_type else [""]
+
+    all_processed_keywords = []
+
+    for base_keyword in raw_keywords:
+        logger.info(f"🚀 Processing Keyword Expansion for: {base_keyword}")
+        
+        current_batch = []
+        if custom_keywords:
+            current_batch = custom_keywords
+        elif target_area:
+            # [MODIFIED] Advanced Target Analysis & Sanitization
+            sanitized_area = str(target_area).strip("[]").replace("'", "").replace('"', "")
+            targets = [t.strip() for t in sanitized_area.split(",") if t.strip()]
+            
+            for t in targets:
+                # Check if it's "Province District" (e.g., "서울 강남구")
+                if " " in t:
+                    parts = t.split()
+                    province = parts[0]
+                    district = " ".join(parts[1:])
+                    
+                    if province in config.CITY_MAP and district in config.CITY_MAP[province]:
+                        # 1. Granular District Mode -> Expand to Dong-level
+                        dongs = config.CITY_MAP[province][district]
+                        current_batch.extend([f"{province} {district} {dong} {base_keyword}" for dong in dongs])
+                    else:
+                        current_batch.append(f"{t} {base_keyword}")
+                
+                elif t in config.CITY_MAP:
+                    # 2. Whole Province Mode (e.g., "인천") -> Expand ALL districts/dongs
+                    districts = config.CITY_MAP[t]
+                    for dist, dongs in districts.items():
+                        for dong in dongs:
+                            current_batch.append(f"{t} {dist} {dong} {base_keyword}")
+                else:
+                    # 3. Generic Fallback
+                    current_batch.append(f"{t} {base_keyword}")
+        else:
+            current_batch = [f"서울 강남구 {base_keyword}"]
+            
+        all_processed_keywords.extend(current_batch)
+        
+    # Unique list preservation order
+    seen = set()
+    unique_keywords = []
+    for kw in all_processed_keywords:
+        if kw not in seen:
+            unique_keywords.append(kw)
+            seen.add(kw)
+            
+    logger.info(f"📂 총 수집 대상 키워드(조합): {len(unique_keywords)}개")
+    keywords_to_run = unique_keywords[start_index:]
 
     checkpoint_file = os.path.join(os.getcwd(), "crawler_checkpoint.json")
     start_index = 0
@@ -869,16 +871,13 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                                             continue
                                         
                                         # [NEW] Multi-Mode Filtering Logic
-                                        if filter_mode != 'all' and filter_keyword:
-                                            passed = False
-                                            if filter_mode == 'name':
-                                                if filter_keyword in shop_data['name']: passed = True
-                                            elif filter_mode == 'category':
-                                                cat = shop_data.get('category', '')
-                                                if filter_keyword in cat: passed = True
+                                        if filter_mode != 'all':
+                                            # [SMART] Automatic Filter Keyword Injection
+                                            active_filter_kw = filter_keyword if filter_keyword else keyword.split()[-1]
+                                            target_val = shop_data.get('name', '') if filter_mode == 'name' else shop_data.get('category', '')
                                             
-                                            if not passed:
-                                                logger.info(f"🛡️ Filtered out by Mode '{filter_mode}': {shop_data['name']}")
+                                            if active_filter_kw.lower() not in target_val.lower():
+                                                logger.info(f"🛡️ Filtered out by Mode '{filter_mode}' (Keyword: {active_filter_kw}): {shop_data['name']}")
                                                 total_skipped += 1
                                                 continue
 

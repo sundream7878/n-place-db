@@ -26,7 +26,7 @@ class AuthWindow(ctk.CTk):
         # CI/BI Colors
         self.brand_deep_blue = config.COLOR_DEEP_BLUE
         self.brand_purple = config.COLOR_ELECTRIC_PURPLE
-        self.brand_green = config.COLOR_NEON_GREEN
+        self.brand_green = "#A855F7" # [FIX] Change branding color to Purple
         self.bg_dark = config.COLOR_DARK_BG
         self.card_navy = "#151934"
         self.text_white = "#FFFFFF"
@@ -49,7 +49,7 @@ class AuthWindow(ctk.CTk):
                 logger.error(f"Logo load error: {e}")
 
         self.label_title = ctk.CTkLabel(self.header_frame, text="NPlace-DB", 
-                                        font=("Arial", 36, "bold"), text_color=self.brand_green)
+                                        font=("Arial", 36, "bold"), text_color="#A855F7")
         self.label_title.pack()
 
         # 2. Main Container (Stage-based)
@@ -70,7 +70,7 @@ class AuthWindow(ctk.CTk):
 
         self.lbl_trial_desc = ctk.CTkLabel(self.welcome_stage, 
                                            text="NPlace-DB의 강력한 기능을\n지금 바로 무료로 체험해보세요.\n\n[생애 단 1회, 총 50건 제공]", 
-                                           font=("Arial", 16, "bold"), text_color=self.brand_green, justify="center")
+                                           font=("Arial", 16, "bold"), text_color="#A855F7", justify="center")
         self.lbl_trial_desc.pack(pady=(0, 25))
 
         self.btn_start_trial = ctk.CTkButton(self.welcome_stage, text="1회 한정 50건 체험하기", 
@@ -91,7 +91,7 @@ class AuthWindow(ctk.CTk):
         # Hidden initially
         
         self.lbl_auth_title = ctk.CTkLabel(self.auth_stage, text="정품 라이선스 인증", 
-                                          font=("Arial", 20, "bold"), text_color=self.brand_green)
+                                          font=("Arial", 20, "bold"), text_color="#A855F7")
         self.lbl_auth_title.pack(pady=(20, 10))
 
         self.entry_key = ctk.CTkEntry(self.auth_stage, placeholder_text="CM-XXXX-XXXX-XXXX", 
@@ -152,7 +152,7 @@ class AuthWindow(ctk.CTk):
         t.start()
 
     def start_trial_flow(self):
-        self.status_label.configure(text="⏳ 체험판 초기화 중...", text_color=self.brand_green)
+        self.status_label.configure(text="⏳ 체험판 초기화 중...", text_color="#A855F7")
         self.update()
         success, msg = AuthManager.start_trial()
         if success:
@@ -176,7 +176,7 @@ class AuthWindow(ctk.CTk):
         try:
             success, msg = AuthManager.validate_and_bind_key(product_key)
             if success:
-                self.status_label.configure(text="✅ 인증 성공!", text_color=self.brand_green)
+                self.status_label.configure(text="✅ 인증 성공!", text_color="#A855F7")
                 self.update()
                 time.sleep(1.0)
                 self.authenticated = True

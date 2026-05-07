@@ -13,6 +13,12 @@ import config
 import logging
 from PIL import Image
 
+# [NEW] Splash Screen Support (PyInstaller)
+try:
+    import pyi_splash
+except ImportError:
+    pyi_splash = None
+
 # Configure logging to file for debugging
 logging.basicConfig(
     filename=os.path.join(config.LOCAL_LOG_PATH, "app_debug.log"),
@@ -48,8 +54,23 @@ class MainApp(ctk.CTk):
         self.crawler_process = None
         self.is_running = False
 
+        # [NEW] Dismiss Splash Screen with a small delay for reliability
+        self.after(1000, self.dismiss_splash)
+
         # [NEW] Check for Updates
         self.after(100, self.start_update_check)
+
+    def dismiss_splash(self):
+        """커스텀 스플래시 화면을 확실하게 닫습니다."""
+        if pyi_splash:
+            try:
+                pyi_splash.update_text('UI Ready!')
+                pyi_splash.close()
+                logger.info("Splash screen successfully closed.")
+            except Exception as e:
+                logger.error(f"Splash close failed: {e}")
+        else:
+            logger.debug("pyi_splash module not found (not a frozen app).")
 
         # [NEW] Test License Notification
         self.after(500, self.check_test_license_notification)
@@ -526,7 +547,8 @@ if __name__ == "__main__":
         if sys.argv[1] == "-m":
             if len(sys.argv) > 2 and sys.argv[2] == "streamlit":
                 import streamlit.web.cli as stcli
-                sys.argv = ["streamlit"] + sys.argv[3:]
+                # [FIX] Force developmentMode=false to avoid "server.port" conflict in EXE
+                sys.argv = ["streamlit"] + sys.argv[3:] + ["--global.developmentMode=false"]
                 sys.exit(stcli.main())
             elif len(sys.argv) > 2 and sys.argv[2] == "playwright":
                 sys.argv = ["playwright"] + sys.argv[3:]
@@ -580,6 +602,25 @@ if __name__ == "__main__":
             sys.exit(0)
 
     logger.info("Application starting (Launcher Mode)...")
+    
+    # [FIX] Force close splash screen after 3 seconds & Add dynamic animation
+    def auto_dismiss_splash():
+        try:
+            import time
+            import pyi_splash
+            
+            # Dynamic Loading Animation
+            for i in range(15): # 3 seconds total (15 * 0.2s)
+                dots = "." * (i % 4)
+                pyi_splash.update_text(f"Marketing Engine Initializing{dots}")
+                time.sleep(0.2)
+                
+            pyi_splash.close()
+            logger.info("Splash screen auto-closed after animation.")
+        except:
+            pass
+    threading.Thread(target=auto_dismiss_splash, daemon=True).start()
+
     try:
         # Check for data directory presence
         os.makedirs("data", exist_ok=True)

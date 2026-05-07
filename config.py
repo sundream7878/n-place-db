@@ -9,10 +9,16 @@ except ImportError:
 
 # [카페 몬스터] 통합 브랜드 및 기술 규격 적용
 
-# Local Database Settings (SQLite) - CafeMonster Standard Path
 PRODUCT_ID = "NPlace-DB"
 CURRENT_VERSION = "1.1.0"
-LOCAL_BASE_PATH = f"C:\\CafeMonster\\{PRODUCT_ID}"
+
+# [PRO] Determine dynamic base path: Executable dir if frozen, else project root
+import sys
+if getattr(sys, 'frozen', False):
+    LOCAL_BASE_PATH = os.path.dirname(sys.executable)
+else:
+    LOCAL_BASE_PATH = os.path.dirname(os.path.abspath(__file__))
+
 LOCAL_DB_PATH = os.path.join(LOCAL_BASE_PATH, "data", "database.sqlite")
 LOCAL_LOG_PATH = os.path.join(LOCAL_BASE_PATH, "data", "log")
 PROGRESS_FILE = os.path.join(LOCAL_LOG_PATH, "progress.json")

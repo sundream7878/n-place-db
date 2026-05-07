@@ -8,8 +8,19 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 class LocalDBHandler:
-    def __init__(self, db_path: str = "data/database.sqlite"):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        if db_path is None:
+            # [PRO] Determine base path: Executable dir if frozen, else project root
+            import sys
+            if getattr(sys, 'frozen', False):
+                base_path = os.path.dirname(sys.executable)
+            else:
+                # Relative to this file's parent's parent
+                base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            self.db_path = os.path.join(base_path, "data", "database.sqlite")
+        else:
+            self.db_path = db_path
+            
         self._ensure_data_dir()
         self.init_db()
 

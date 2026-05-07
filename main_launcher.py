@@ -41,7 +41,9 @@ def run_streamlit(port):
 def launch_app_browser(port):
     url = f"http://127.0.0.1:{port}"
     for _ in range(15):
-        if is_port_in_use(port): break
+        if is_port_in_use(port):
+            time.sleep(2) # [FIX] Wait 2 more seconds for Streamlit to fully initialize
+            break
         time.sleep(1)
     
     app_modes = [

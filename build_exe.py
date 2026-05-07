@@ -25,9 +25,12 @@ def build():
         '--add-data=admin_dashboard;admin_dashboard',
         '--add-data=messenger;messenger',
         '--add-data=crawler;crawler',
+        '--add-data=assets;assets',
         '--add-data=config.py;.',
         '--add-data=admin_dashboard/templates.json;.',
         '--collect-all=playwright_stealth',
+        '--collect-all=streamlit_autorefresh', # [FIX] Include missing module
+        '--splash=C:\\Users\\chiuk\\.gemini\\antigravity\\brain\\cf677746-2969-4ce9-bc2c-073b4f4c1b30\\nplace_db_official_splash_1778128328952.png', # [NEW] Official Logo Splash
         '--hidden-import=step1_refined_crawler',
         '--hidden-import=engine_recover_missing',
         '--hidden-import=streamlit.runtime.scriptrunner.magic_funcs',

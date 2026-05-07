@@ -1,18 +1,7 @@
 import streamlit as st
-import pandas as pd
 import os
-import json
-import time
-import subprocess
 import sys
-import hashlib
-import smtplib
 import importlib
-from streamlit_autorefresh import st_autorefresh
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.application import MIMEApplication
-from datetime import datetime
 
 # Ensure parent directory is in path to import config
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -20,7 +9,51 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 import config
-importlib.reload(config) # [CRITICAL] Pick up newly added attributes
+importlib.reload(config)
+
+# [가이드 준수] Wide Layout & Premium Branding
+st.set_page_config(
+    page_title=f"[{config.BRAND_NAME_KR}] Pro",
+    page_icon="🎯",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# [가이드 준수] Ultra Wide Full-Width CSS (Force Immediate Expansion)
+st.markdown("""
+    <style>
+    /* 메인 컨테이너 최대 확장 */
+    .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 0rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        max-width: 98% !important;
+    }
+    /* 앱 전체 너비 고정 */
+    .stApp {
+        width: 100% !important;
+    }
+    /* 불필요한 여백 및 푸터 제거 */
+    footer {display: none !important;}
+    header {display: none !important;}
+    #MainMenu {visibility: hidden;}
+    </style>
+    """, unsafe_allow_html=True)
+
+import pandas as pd
+import json
+import time
+import subprocess
+import hashlib
+import smtplib
+from streamlit_autorefresh import st_autorefresh
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
+from datetime import datetime
+
+# Imports moved to top
 
 from sb_auth_manager import SupabaseAuthManager as AuthManager
 from crawler.local_db_handler import LocalDBHandler as DBHandler
@@ -223,7 +256,7 @@ def format_tpl(text, shop_name):
     return text.replace("{상호명}", shop_name if shop_name else "원장님")
 
 # --- UI Configuration ---
-st.set_page_config(page_title=f"[{config.BRAND_NAME_KR}] Pro", page_icon="👹", layout="wide")
+# st.set_page_config removed to avoid redundancy
 
 # Init Session State
 if 'active_page' not in st.session_state: st.session_state['active_page'] = 'Shop Search'
@@ -300,14 +333,26 @@ st.markdown("""
         padding: 0.6rem 1.5rem !important; box-shadow: 0 4px 6px rgba(0,0,0,0.1) !important;
     }
 
+    /* [NEW] 선명한 입력창 스타일 */
+    .stTextInput input, .stTextArea textarea, [data-baseweb="select"] {
+        border: 1.5px solid #CBD5E1 !important; /* 선명한 회색 테두리 */
+        border-radius: 10px !important;
+        background-color: #FFFFFF !important;
+        transition: all 0.2s ease-in-out !important;
+    }
+    .stTextInput input:focus, .stTextArea textarea:focus, [data-baseweb="select"]:focus-within {
+        border-color: #A855F7 !important; /* 보라색 네온 포커스 */
+        box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.2) !important;
+    }
+
     [data-testid="stHeader"] { background: rgba(255,255,255,0.9); backdrop-filter: blur(12px); }
     .block-container { padding-top: 0rem !important; padding-bottom: 10rem !important; }
     
     [data-testid="stVerticalBlock"] > div:has(.nav-anchor) {
         position: sticky; top: 0; z-index: 1000;
         background-color: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px);
-        padding: 20px 0; border-bottom: 4px solid #00E676;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+        padding: 8px 0; /* 압축된 패딩 */
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
     }
     .nav-anchor { display: none; }
     </style>
@@ -332,17 +377,19 @@ with st.container():
     st.markdown('<div class="nav-anchor"></div>', unsafe_allow_html=True) # Sticky를 위한 앵커
     col_logo, col_nav = st.columns([1.8, 4], vertical_alignment="center")
     with col_logo:
+        # Optimized Logo & Title Layout
         logo_path = os.path.join(os.path.dirname(__file__), "..", "assets", "MarketingMonster_logo.png")
-        if os.path.exists(logo_path):
-            st.image(logo_path, width=180)
+        logo_base64 = base64.b64encode(open(logo_path, 'rb').read()).decode() if os.path.exists(logo_path) else ""
         
         st.markdown(f"""
-            <div style="display:flex; flex-direction:column; gap:0px; margin-top:-10px;">
-                <div style="display:flex; align-items:baseline; gap:10px;">
-                    <div style="font-size:2.2rem; font-weight:900; color:#00E676; letter-spacing:-1.5px;">NPlace_DB</div>
-                    <div style="font-size:0.85rem; font-weight:700; color:#94A3B8; background:#F8FAFC; padding:2px 8px; border-radius:6px; border:1px solid #E2E8F0; margin-bottom:5px;">v{config.CURRENT_VERSION}</div>
+            <div style="display:flex; align-items:center; gap:20px;">
+                <img src="data:image/png;base64,{logo_base64}" width="110" style="margin-bottom:5px;">
+                <div style="display:flex; flex-direction:column;">
+                    <div style="display:flex; align-items:baseline; gap:8px;">
+                    <div style="font-size:2.0rem; font-weight:900; background: linear-gradient(135deg, #A855F7 0%, #3B82F6 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing:-1.5px; filter: drop-shadow(0 0 8px rgba(168, 85, 247, 0.3));">NPlace-DB</div>
+                    <div style="font-size:0.75rem; font-weight:700; color:#94A3B8; background:#F8FAFC; padding:1px 6px; border-radius:5px; border:1px solid #E2E8F0;">v{config.CURRENT_VERSION}</div>
+                    </div>
                 </div>
-                <div style="font-size:0.8rem; color:#64748B; font-weight:800; letter-spacing:0.05em; margin-top:-5px;">대한민국 NO.1 마케팅 솔루션</div>
             </div>
         """, unsafe_allow_html=True)
     with col_nav:
@@ -809,8 +856,8 @@ if st.session_state['active_page'] == 'Shop Search':
     
     with c1:
         with st.container(border=True):
-            st.markdown('<p class="input-label">🔍 키워드 설정</p>', unsafe_allow_html=True)
-            s_keyword = st.text_input("수집 키워드", value=u_set.get('keyword', config.BASE_KEYWORD), key="main_kw_v5", label_visibility="collapsed")
+            st.markdown('<p class="input-label">🔍 키워드 설정 (콤마 구분)</p>', unsafe_allow_html=True)
+            s_keyword = st.text_input("수집 키워드", value=u_set.get('keyword', config.BASE_KEYWORD), key="main_kw_v5", placeholder="예: 뷰티샵, 네일샵, 피부관리", label_visibility="collapsed")
             st.markdown('<p class="input-label" style="margin-top:10px;">🚫 제외 키워드 (콤마 구분)</p>', unsafe_allow_html=True)
             s_exclude = st.text_input("제외 키워드", value=u_set.get('exclude', ""), placeholder="예: 태닝, 마사지", key="main_ex_v5", label_visibility="collapsed")
             
@@ -818,7 +865,7 @@ if st.session_state['active_page'] == 'Shop Search':
             f_mode_opts = ["전체(상호/업종/메뉴 포함)", "상호명 일치", "업종명 일치"]
             saved_f_mode = u_set.get('filter_mode_ui', "전체(상호/업종/메뉴 포함)")
             s_f_mode_ui = st.selectbox("필터 모드", f_mode_opts, index=f_mode_opts.index(saved_f_mode) if saved_f_mode in f_mode_opts else 0, key="main_f_mode_v5", label_visibility="collapsed")
-            s_f_keyword = st.text_input("필터 키워드", value=u_set.get('filter_keyword', ""), placeholder="필터링할 단어 입력", key="main_f_kw_v5", label_visibility="collapsed", help="선택한 모드(상호/업종)에 이 단어가 포함된 것만 최종 수집합니다.")
+            # [REMOVED] 필터 키워드 입력창 제거 (검색 키워드 자동 참조)
         
     with c2:
         with st.container(border=True):
