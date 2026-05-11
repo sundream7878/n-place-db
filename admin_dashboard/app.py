@@ -1,6 +1,29 @@
-import streamlit as st
-import os
 import sys
+import os
+import logging
+
+# [CRITICAL FIX] Root logger configuration to prevent NoneType stdout errors in frozen mode
+if getattr(sys, 'frozen', False):
+    try:
+        # Use config.ENGINE_LOG_FILE for unification (data/app.log)
+        log_file = config.ENGINE_LOG_FILE
+        log_dir = os.path.dirname(log_file)
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # Use FileHandler ONLY, NO StreamHandler (stdout is None)
+        logging.basicConfig(
+            handlers=[logging.FileHandler(log_file, encoding='utf-8', mode='a')],
+            level=logging.INFO,
+            force=True
+        )
+        # Redirection as secondary defense
+        if sys.stdout is None or sys.stderr is None:
+            log_fd = os.open(log_file, os.O_RDWR | os.O_CREAT | os.O_APPEND)
+            if sys.stdout is None: os.dup2(log_fd, 1) # stdout
+            if sys.stderr is None: os.dup2(log_fd, 2) # stderr
+    except: pass
+
+import streamlit as st
 import importlib
 
 # Ensure parent directory is in path to import config
@@ -10,6 +33,14 @@ if parent_dir not in sys.path:
 
 import config
 importlib.reload(config)
+
+# [FIX] Force close splash screen as soon as dashboard starts
+try:
+    import pyi_splash
+    if pyi_splash.is_available():
+        pyi_splash.close()
+except:
+    pass
 
 # [가이드 준수] Wide Layout & Premium Branding
 st.set_page_config(
@@ -164,12 +195,20 @@ def load_local_data():
 def get_engine_pid():
     pid_file = os.path.join(config.LOCAL_LOG_PATH, "engine.pid")
     if os.path.exists(pid_file):
-        with open(pid_file, "r") as f:
-            try:
-                pid = int(f.read().strip())
+        try:
+            with open(pid_file, "r") as f:
+                content = f.read().strip()
+                if not content: return None
+                pid = int(content)
                 import psutil
-                if psutil.pid_exists(pid): return pid
-            except: pass
+                if psutil.pid_exists(pid): 
+                    return pid
+                else:
+                    # [DEBUG] PID file exists but process is gone
+                    return None
+        except Exception as e:
+            # [DEBUG] Error reading PID file
+            return None
     return None
 
 def stop_engine():
@@ -186,18 +225,43 @@ def stop_engine():
     return False
 
 def run_engine_cmd(target, limit, keyword="", filter_mode="all", filter_keyword=""):
-    # Directly call the crawler engine script
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    script_path = os.path.abspath(os.path.join(base_dir, '..', 'step1_refined_crawler.py'))
+    is_frozen = getattr(sys, 'frozen', False)
     
-    # Arguments: target, count, shop_type
-    cmd = [sys.executable, script_path, target, str(limit), keyword]
+    if is_frozen:
+        # [FIX] In frozen (exe) mode, the exe itself acts as the Python launcher.
+        # The launcher's __main__ block handles argv like 'step1_refined_crawler.py'
+        # by running it via runpy.run_path from _internal folder.
+        exe_path = sys.executable
+        script_name = "step1_refined_crawler.py"
+        cmd = [exe_path, script_name, target, str(limit), keyword]
+        cwd = os.path.dirname(exe_path)  # dist/NPlace-DB-v2/
+    else:
+        # [DEV] In dev mode, call python interpreter directly
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        script_path = os.path.abspath(os.path.join(base_dir, '..', 'step1_refined_crawler.py'))
+        cmd = [sys.executable, script_path, target, str(limit), keyword]
+        cwd = os.path.dirname(script_path)
     
     if filter_mode != "all":
         cmd.extend(["--filter-mode", filter_mode, "--filter-keyword", filter_keyword])
     
-    # Launch directly without hiding anything to debug 'stuck' issues
-    proc = subprocess.Popen(cmd, cwd=os.path.dirname(script_path))
+    my_env = os.environ.copy()
+    my_env["PYTHONIOENCODING"] = "utf-8"
+    my_env["PYTHONUNBUFFERED"] = "1"
+    
+    # [NEW] Force Playwright to look for browsers in the bundled directory if frozen
+    if is_frozen:
+        bundle_dir = getattr(sys, '_MEIPASS', os.path.dirname(exe_path))
+        my_env["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(bundle_dir, "playwright", "driver", "package", ".local-browsers")
+    
+    
+    # Launch without CREATE_NO_WINDOW so the log file approach works
+    proc = subprocess.Popen(
+        cmd, 
+        cwd=cwd,
+        env=my_env,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+    )
     
     # Save PID to file for control
     pid_file = os.path.join(config.LOCAL_LOG_PATH, "engine.pid")
@@ -222,14 +286,21 @@ def get_crawler_progress():
 
 def get_live_logs(n=1000):
     log_path = config.ENGINE_LOG_FILE
+    
+    combined_logs = []
+    
+    # 1. Check for logs
     if os.path.exists(log_path):
         try:
-            with open(log_path, "r", encoding="utf-8") as f:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
-                # 최신 1000줄로 확장하여 전체 흐름 파악 가능하게 변경
-                return "".join(lines[-n:])
-        except: return "로그를 읽는 중 오류 발생"
-    return "수집 로그가 아직 없습니다."
+                combined_logs.append("".join(lines[-n:]))
+        except: 
+            combined_logs.append("로그를 읽는 중 오류 발생")
+            
+    if not combined_logs:
+        return "수집 로그가 아직 없습니다."
+    return "\n".join(combined_logs)
 
 def send_email(user, pw, target, subject, body, smtp_server="smtp.naver.com", attachments=None):
     try:
@@ -405,7 +476,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 df = load_local_data()
 
 # --- Settings Persistence ---
-SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'crawler_settings.json')
+SETTINGS_FILE = config.SETTINGS_FILE
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -419,14 +490,54 @@ def save_settings(new_settings):
     current = load_settings()
     current.update(new_settings)
     try:
-        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(current, f, ensure_ascii=False, indent=2)
-    except: pass
+        # Sync session state so UI reflects latest saved values
+        st.session_state['user_settings'] = current
+    except Exception as e:
+        logger.error(f"Settings save failed: {e}")
+
+# [NEW] Auto-save callbacks — called whenever widget value changes
+def _autosave_keyword():
+    val = st.session_state.get('monster_db_kw_input_v7', '')
+    if val: # Only save if not empty to prevent accidental wipes
+        save_settings({'keyword': val})
+
+def _autosave_exclude():
+    # Exclusion can be empty, so we just save
+    save_settings({'exclude': st.session_state.get('main_ex_v5', '')})
+
+def _autosave_filter_mode():
+    save_settings({'filter_mode_ui': st.session_state.get('main_f_mode_v5', '전체(상호/업종/메뉴 포함)')})
+
+def _autosave_provinces():
+    val = st.session_state.get('main_prov_v5', [])
+    if val:
+        save_settings({'provinces': val})
+
+def _autosave_districts():
+    val = st.session_state.get('main_dist_v5', [])
+    if val:
+        save_settings({'districts': val})
 
 # Initial Settings Load
 if 'user_settings' not in st.session_state:
     st.session_state['user_settings'] = load_settings()
+    us = st.session_state['user_settings']
+    # Force initialize widget session states to saved values so they don't appear empty
+    st.session_state['monster_db_kw_input_v7'] = us.get('keyword', config.BASE_KEYWORD)
+    st.session_state['main_ex_v5'] = us.get('exclude', "")
+    st.session_state['main_f_mode_v5'] = us.get('filter_mode_ui', "상호명 일치")
+    st.session_state['main_prov_v5'] = us.get('provinces', [])
+    
+    # Check if saved provinces exist in config to prevent errors
+    saved_provs = us.get('provinces', [])
+    valid_provs = [p for p in saved_provs if p in config.REGIONS_LIST]
+    st.session_state['main_prov_v5'] = valid_provs
+    # [FIX] Restore saved districts as well
+    st.session_state['main_dist_v5'] = us.get('districts', [])
+
+
 
 def render_track(track_id, label, col_filter, cfg_name, df_in):
     st.markdown(f"#### 🚀 {label}")
@@ -848,30 +959,56 @@ if st.session_state['active_page'] == 'Shop Search':
     # --- 1. Settings Panel (Top) ---
     st.markdown('<div class="section-title">⚙️ 수집 및 필터 설정</div>', unsafe_allow_html=True)
     
-    # [HACK] Disable browser autocomplete by adding a hidden dummy input
-    st.markdown('<input type="text" style="display:none;" autocomplete="off">', unsafe_allow_html=True)
-    
     c1, c2, c3 = st.columns(3, gap="medium")
     u_set = st.session_state['user_settings']
     
     with c1:
         with st.container(border=True):
             st.markdown('<p class="input-label">🔍 키워드 설정 (콤마 구분)</p>', unsafe_allow_html=True)
-            s_keyword = st.text_input("수집 키워드", value=u_set.get('keyword', config.BASE_KEYWORD), key="main_kw_v5", placeholder="예: 뷰티샵, 네일샵, 피부관리", label_visibility="collapsed")
+            
+            # [FIX] Enhanced Datalist & Unique ID to block unrelated browser history
+            kw_history = u_set.get('kw_history', [])
+            history_options = "".join([f'<option value="{kw}">' for kw in kw_history[::-1][:15]])
+            st.markdown(f'<datalist id="monster_kw_datalist">{history_options}</datalist>', unsafe_allow_html=True)
+            
+            # Use a highly unique key to differentiate from other web inputs
+            s_keyword = st.text_input("수집 키워드", key="monster_db_kw_input_v7", placeholder="예: 뷰티샵, 네일샵, 피부관리", label_visibility="collapsed", on_change=_autosave_keyword)
+            
+            # Robust JS to link datalist and force app-specific history
+            st.components.v1.html(
+                f"""
+                <script>
+                    const applySmartHistory = () => {{
+                        const input = window.parent.document.querySelector('input[aria-label="수집 키워드"]');
+                        if (input) {{
+                            input.setAttribute('list', 'monster_kw_datalist');
+                            input.setAttribute('autocomplete', 'on');
+                            // Rename to block global history from other sites
+                            input.setAttribute('name', 'monster_nplace_unique_kw');
+                            input.setAttribute('id', 'monster_nplace_unique_kw');
+                        }}
+                    }}
+                    setTimeout(applySmartHistory, 500);
+                    setInterval(applySmartHistory, 2000); // Maintain state
+                </script>
+                """,
+                height=0,
+            )
+
             st.markdown('<p class="input-label" style="margin-top:10px;">🚫 제외 키워드 (콤마 구분)</p>', unsafe_allow_html=True)
-            s_exclude = st.text_input("제외 키워드", value=u_set.get('exclude', ""), placeholder="예: 태닝, 마사지", key="main_ex_v5", label_visibility="collapsed")
+            s_exclude = st.text_input("제외 키워드", placeholder="예: 태닝, 마사지", key="main_ex_v5", label_visibility="collapsed", on_change=_autosave_exclude)
             
             st.markdown('<p class="input-label" style="margin-top:10px;">🎯 2차 필터링 조건</p>', unsafe_allow_html=True)
             f_mode_opts = ["전체(상호/업종/메뉴 포함)", "상호명 일치", "업종명 일치"]
             saved_f_mode = u_set.get('filter_mode_ui', "전체(상호/업종/메뉴 포함)")
-            s_f_mode_ui = st.selectbox("필터 모드", f_mode_opts, index=f_mode_opts.index(saved_f_mode) if saved_f_mode in f_mode_opts else 0, key="main_f_mode_v5", label_visibility="collapsed")
+            s_f_mode_ui = st.selectbox("필터 모드", f_mode_opts, key="main_f_mode_v5", label_visibility="collapsed", on_change=_autosave_filter_mode)
             # [REMOVED] 필터 키워드 입력창 제거 (검색 키워드 자동 참조)
         
     with c2:
         with st.container(border=True):
             st.markdown('<p class="input-label">📍 지역 설정</p>', unsafe_allow_html=True)
             saved_provs = u_set.get('provinces', [])
-            s_provinces = st.multiselect("대상 시/도", config.REGIONS_LIST, default=saved_provs if all(p in config.REGIONS_LIST for p in saved_provs) else [], key="main_prov_v5", label_visibility="collapsed")
+            s_provinces = st.multiselect("대상 시/도", config.REGIONS_LIST, key="main_prov_v5", label_visibility="collapsed", on_change=_autosave_provinces)
             
             s_target = ""
             if s_provinces:
@@ -883,8 +1020,7 @@ if st.session_state['active_page'] == 'Shop Search':
                 saved_dists = u_set.get('districts', [])
                 s_dist_opts = sorted(all_districts)
                 s_dist_defaults = [d for d in saved_dists if d in s_dist_opts]
-                selected_dists = st.multiselect("상세 구역 선택 (정밀 수집)", options=s_dist_opts, default=s_dist_defaults, key="main_dist_v5")
-                
+                selected_dists = st.multiselect("상세 구역 선택 (정밀 수집)", options=s_dist_opts, key="main_dist_v5", on_change=_autosave_districts)
                 targets = []
                 dist_provinces = set()
                 for sd in selected_dists:
@@ -904,39 +1040,55 @@ if st.session_state['active_page'] == 'Shop Search':
             
             # 1. Explicit Save Button
             if st.button("💾 현재 설정 저장", use_container_width=True, key="save_settings_btn"):
+                # Update history
+                new_hist = u_set.get('kw_history', [])
+                if s_keyword and s_keyword not in new_hist:
+                    new_hist.append(s_keyword)
+                    new_hist = new_hist[-10:] # Keep last 10
+                
                 save_settings({
                     'keyword': s_keyword,
                     'exclude': s_exclude,
                     'filter_mode_ui': s_f_mode_ui,
-                    'filter_keyword': s_f_keyword,
+                    'filter_keyword': "",
                     'provinces': s_provinces,
-                    'districts': selected_dists if s_provinces else []
+                    'districts': selected_dists if s_provinces else [],
+                    'kw_history': new_hist
                 })
-                st.toast("✅ 설정이 안전하게 저장되었습니다!")
-                time.sleep(0.5)
+                st.success("✅ 설정이 안전하게 저장되었습니다!")
+                time.sleep(1)
+                st.rerun()
+
             
             st.markdown('<div style="margin-top:10px;"></div>', unsafe_allow_html=True)
             
-            # [FIXED] Immediate UI Lock to prevent double-click
-            if 'engine_starting' not in st.session_state: st.session_state['engine_starting'] = False
-
+            # [FIXED] Persistent starting state until PID is detected
             pid = get_engine_pid()
             if pid:
                 st.session_state['engine_starting'] = False
+            
+            if st.session_state.get('engine_starting', False) and not pid:
+                st.button("⏳ 엔진 시동 중...", disabled=True, use_container_width=True)
+                time.sleep(1) # Wait for PID file creation
+                st.rerun()
+            elif pid:
                 if st.button("🔴 엔진 가동 정지", use_container_width=True, key="stop_btn_v5"):
                     if stop_engine(): st.rerun()
                 st.markdown(f'<div style="text-align:center; padding:10px; background:#F1F5F9; border-radius:10px; border:1px solid #E2E8F0;"><p style="margin:0; font-size:0.7rem; color:#64748B; font-weight:800;">ID: {pid} 엔진 작동 중</p></div>', unsafe_allow_html=True)
-            elif st.session_state['engine_starting']:
-                st.button("⏳ 엔진 시동 중...", disabled=True, use_container_width=True)
-                time.sleep(1)
-                st.rerun()
             else:
                 if st.button("🟢 데이터 수집 시작", type="primary", use_container_width=True, key="start_btn_v5"):
                     if s_keyword and s_target:
+                        # Update history
+                        new_hist = u_set.get('kw_history', [])
+                        if s_keyword and s_keyword not in new_hist:
+                            new_hist.append(s_keyword)
+                            new_hist = new_hist[-10:]
+                        
                         st.session_state['engine_starting'] = True
                         save_settings({
                             'keyword': s_keyword, 'exclude': s_exclude, 'filter_mode_ui': s_f_mode_ui,
-                            'filter_keyword': s_f_keyword, 'provinces': s_provinces, 'districts': selected_dists if s_provinces else []
+                            'filter_keyword': "", 'provinces': s_provinces, 'districts': selected_dists if s_provinces else [],
+                            'kw_history': new_hist
                         })
                         limit = AuthManager.get_collection_limit()
                         is_paid = AuthManager.check_license_status() and AuthManager.get_serial_key() != "TRIAL-MODE"
@@ -944,7 +1096,7 @@ if st.session_state['active_page'] == 'Shop Search':
                         filter_mode_map = {"전체(상호/업종/메뉴 포함)": "all", "상호명 일치": "name", "업종명 일치": "category"}
                         f_mode = filter_mode_map.get(s_f_mode_ui, "all")
                         st.session_state['completion_shown'] = False # [NEW] Reset completion flag
-                        run_engine_cmd(s_target, final_limit, s_keyword, filter_mode=f_mode, filter_keyword=s_f_keyword)
+                        run_engine_cmd(s_target, final_limit, s_keyword, filter_mode=f_mode, filter_keyword="")
                         st.rerun()
                     else: st.warning("키워드와 지역을 설정해 주세요.")
 
@@ -1007,8 +1159,20 @@ if st.session_state['active_page'] == 'Shop Search':
     # [FIXED] Reliable Completion Notification (Monster Rule 3.2)
     if prog.get("status") == "completed" and not st.session_state.get("completion_shown", False):
         st.balloons()
-        st.success("🎉 데이터 수집이 완료되었습니다! 아래 [실시간 수집 데이터 현황] 우측의 버튼을 눌러 결과를 다운로드하세요.")
-        st.session_state["completion_shown"] = True
+        st.snow() # [NEW] Extra visual celebration
+        
+        # [NEW] Premium Completion Modal (Simulated with high-impact container)
+        with st.container(border=True):
+            col1, col2 = st.columns([0.1, 0.9])
+            with col1: st.title("🎉")
+            with col2:
+                st.markdown(f"### 수집이 모두 완료되었습니다!")
+                st.markdown(f"**총 {prog.get('success_count', 0)}건**의 데이터가 성공적으로 수집 및 저장되었습니다.")
+                st.info("아래 [실시간 수집 데이터 현황] 우측의 '📥 엑셀 다운로드' 버튼을 눌러 결과를 확인하세요.")
+                if st.button("✅ 확인 (닫기)", type="primary", use_container_width=True):
+                    st.session_state["completion_shown"] = True
+                    st.rerun()
+        st.markdown("---")
 
     
     # 2.1 Four Status Cards
@@ -1068,12 +1232,13 @@ if st.session_state['active_page'] == 'Shop Search':
         # [FIXED] More visible and robust status signaling (Monster Rule 3.2)
         if pid:
             st.markdown(f'<div style="display:flex; align-items:center; gap:8px; margin-top:8px;"><div class="live-dot"></div><span style="color:#00E676; font-weight:800; font-size:0.85rem;">실시간 수집 중: 5초마다 자동 갱신</span></div>', unsafe_allow_html=True)
-            # st_autorefresh가 작동하지 않을 경우를 대비한 세이프티
-            time.sleep(0.1) 
-            from streamlit_autorefresh import st_autorefresh
-            st_autorefresh(interval=5000, limit=None, key="engine_autorefresh_v2")
         else:
             st.caption("🔄 엔진이 정지 상태입니다.")
+
+    # [NEW] Moved st_autorefresh outside expander to ensure global dashboard updates
+    if pid:
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=5000, limit=None, key="engine_autorefresh_global_v1")
 
     st.markdown("---")
     if not df.empty:

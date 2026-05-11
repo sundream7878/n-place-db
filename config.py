@@ -10,7 +10,7 @@ except ImportError:
 # [카페 몬스터] 통합 브랜드 및 기술 규격 적용
 
 PRODUCT_ID = "NPlace-DB"
-CURRENT_VERSION = "1.1.0"
+CURRENT_VERSION = "1.1.14"
 
 # [PRO] Determine dynamic base path: Executable dir if frozen, else project root
 import sys
@@ -22,11 +22,22 @@ else:
 LOCAL_DB_PATH = os.path.join(LOCAL_BASE_PATH, "data", "database.sqlite")
 LOCAL_LOG_PATH = os.path.join(LOCAL_BASE_PATH, "data", "log")
 PROGRESS_FILE = os.path.join(LOCAL_LOG_PATH, "progress.json")
-ENGINE_LOG_FILE = os.path.join(LOCAL_BASE_PATH, "crawler_place.log")
+ENGINE_LOG_FILE = os.path.join(LOCAL_BASE_PATH, "data", "app.log")
+
+# [NEW] Persistent User Settings Path (Standard Windows App Behavior)
+if sys.platform == "win32":
+    USER_DATA_PATH = os.path.join(os.getenv('APPDATA', LOCAL_BASE_PATH), "NPlace-DB")
+else:
+    USER_DATA_PATH = os.path.join(os.path.expanduser("~"), ".nplace_db")
+
+os.makedirs(USER_DATA_PATH, exist_ok=True)
+SETTINGS_FILE = os.path.join(USER_DATA_PATH, "user_settings.json")
 
 # Ensure base directories exist
 os.makedirs(LOCAL_LOG_PATH, exist_ok=True)
 os.makedirs(os.path.join(LOCAL_BASE_PATH, "data"), exist_ok=True)
+
+
 
 # [마케팅 몬스터] 통합 브랜드 및 기술 규격 적용
 BRAND_NAME_KR = "NPlace_DB"

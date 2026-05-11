@@ -40,11 +40,11 @@ def run_streamlit(port):
 
 def launch_app_browser(port):
     url = f"http://127.0.0.1:{port}"
-    for _ in range(15):
+    for _ in range(30): # Check more frequently (0.2s * 30 = 6s max)
         if is_port_in_use(port):
-            time.sleep(2) # [FIX] Wait 2 more seconds for Streamlit to fully initialize
+            time.sleep(0.5) # Minimum wait for initialization
             break
-        time.sleep(1)
+        time.sleep(0.2)
     
     app_modes = [
         ["chrome.exe", f"--app={url}", "--window-size=1300,1050", "--window-position=0,0"], 
@@ -100,7 +100,8 @@ def main():
         st_proc = run_streamlit(port)
         if st_proc:
             launch_app_browser(port)
-            st_proc.wait()
+            # [FIX] Do NOT wait here. Let the launcher exit so splash closes.
+            logger.info("Dashboard launched. Launcher exiting to clear splash screen.")
 
 if __name__ == "__main__":
     main()

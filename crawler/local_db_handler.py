@@ -198,9 +198,6 @@ class LocalDBHandler:
         except Exception as e:
             logger.error(f"Error resetting statuses: {e}")
             return False
-        except Exception as e:
-            logger.error(f"Error fetching shops from SQLite: {e}")
-            return []
 
     def get_count(self) -> int:
         """Returns the total number of records in the shops table."""

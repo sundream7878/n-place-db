@@ -15,31 +15,46 @@ import time
 from datetime import datetime
 
 # [MODIFIED] Force stdout encoding to UTF-8 to prevent garbled text in dashboard
-if sys.stdout.encoding.lower() != 'utf-8':
-    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except: pass
 # Setup Logging
+# Setup Logging with Immediate Flushing
+class RealTimeFileHandler(logging.FileHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
 # [NEW] Clear log file securely BEFORE attaching handlers
 try:
     if os.path.exists(config.ENGINE_LOG_FILE):
-        open(config.ENGINE_LOG_FILE, 'w').close()
+        open(config.ENGINE_LOG_FILE, 'w', encoding='utf-8').close()
 except: pass
+
+# [FIX] Simplified, standard logging to prevent NoneType errors
+handlers = [RealTimeFileHandler(config.ENGINE_LOG_FILE, encoding='utf-8')]
+if sys.stdout:
+    handlers.append(logging.StreamHandler(sys.stdout))
 
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        # [NEW] Add delay=False and use a custom flush or just standard FileHandler
-        # We will manually flush important logs if needed, or use a handler that auto-flushes.
-        logging.FileHandler(config.ENGINE_LOG_FILE, encoding='utf-8'),
-        logging.StreamHandler()
-    ]
+    handlers=handlers
 )
-# Force flush on FileHandler to ensure real-time dashboard updates
-for handler in logging.getLogger().handlers:
-    if isinstance(handler, logging.FileHandler):
-        handler.flush = lambda h=handler: h.stream.flush() if h.stream else None
-
 logger = logging.getLogger(__name__)
+
+# [STAGE 0] PID Initialization
+print("--- [STAGE 0] Engine Initializing ---", flush=True)
+# [FIX] Write PID file immediately to prevent dashboard from losing track
+try:
+    pid_file = os.path.join(config.LOCAL_LOG_PATH, "engine.pid")
+    os.makedirs(config.LOCAL_LOG_PATH, exist_ok=True)
+    with open(pid_file, "w") as f:
+        f.write(str(os.getpid()))
+    logger.info(f"🚀 Engine PID recorded: {os.getpid()}")
+except Exception as e:
+    logger.error(f"⚠️ Failed to write PID file: {e}")
 
 # Config
 TABLE_NAME = "t_crawled_shops"
@@ -225,8 +240,9 @@ async def extract_detail_info(page, shop_data):
 
         return True
     except Exception as e:
-        logger.warning(f"Failed to extract details for {shop_data.get('name')}: {e}")
-        return False
+        logger.warning(f"⚠️ Detail extraction failed for {shop_data.get('name', 'Unknown')}: {e}")
+        # Return True anyway to keep the basic info from list view
+        return True
 
 async def install_playwright_browsers():
     """
@@ -244,6 +260,9 @@ async def install_playwright_browsers():
         logger.warning(f"⚠️ Playwright install failed or already handled: {e}")
 
 async def run_crawler(target_area=None, target_count=10, resume=False, custom_keywords=None, shop_type=None, app_mode=False, exclude_keywords=None, filter_mode='all', filter_keyword=''):
+    print("--- [STAGE 1] run_crawler started ---", flush=True)
+    print(f"DEBUG ARGS: Area={target_area}, Count={target_count}, Type={shop_type}", flush=True)
+
     # Proactively try to install browsers in Cloud environments
     is_cloud = os.environ.get("STREAMLIT_RUNTIME_ENV") or "/home/appuser" in os.getcwd() or os.environ.get("STREAMLIT_SERVER_BASE_URL")
     if is_cloud:
@@ -280,6 +299,7 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
         logger.info(f"🚀 Processing Keyword Expansion for: {base_keyword}")
         
         current_batch = []
+        targets = []
         if custom_keywords:
             current_batch = custom_keywords
         elif target_area:
@@ -324,18 +344,16 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
             seen.add(kw)
             
     logger.info(f"📂 총 수집 대상 키워드(조합): {len(unique_keywords)}개")
-    keywords_to_run = unique_keywords[start_index:]
-
-    checkpoint_file = os.path.join(os.getcwd(), "crawler_checkpoint.json")
     start_index = 0
+    checkpoint_file = os.path.join(os.getcwd(), "crawler_checkpoint.json")
     
     if resume and os.path.exists(checkpoint_file):
         try:
             with open(checkpoint_file, "r", encoding="utf-8") as f:
                 checkpoint_data = json.load(f)
                 last_keyword = checkpoint_data.get("last_keyword")
-                if last_keyword in keywords:
-                    start_index = keywords.index(last_keyword) + 1
+                if last_keyword in unique_keywords:
+                    start_index = unique_keywords.index(last_keyword) + 1
                     logger.info(f"⏭️ Resuming from index {start_index} (Last: {last_keyword})")
                 else:
                     logger.info("ℹ️ Checkpoint keyword not found in current set. Starting from scratch.")
@@ -374,7 +392,15 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
     }
     print(f"PROGRESS_JSON: {json.dumps(initial_data, ensure_ascii=False)}", flush=True)
 
-    keywords_to_run = keywords[start_index:]
+    print(f"--- [STAGE 2] Keyword Expansion Complete: {len(unique_keywords)} items ---", flush=True)
+    keywords_to_run = unique_keywords[start_index:]
+    
+    if not keywords_to_run:
+        logger.info("⚠️ No keywords to process (possibly already finished or invalid input).")
+        return
+
+    print(f"--- [STAGE 3] Starting Playwright (Keywords to run: {len(keywords_to_run)}) ---", flush=True)
+    
     # --- LOAD DYNAMIC SETTINGS ---
     SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'crawler_settings.json')
     # [ACCELERATED] Faster delays for commercial readiness
@@ -389,16 +415,13 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                 max_delay = 15
                 kw_min = 10
                 kw_max = 20
-                if shop_type is None: shop_type = settings.get("shop_type")
-                if app_mode is False: app_mode = settings.get("app_mode", False)
-                if not filter_mode: filter_mode = settings.get("filter_mode", "all")
-                if not filter_keyword: filter_keyword = settings.get("filter_keyword", "")
                 logger.info(f"⚙️ Normalized Settings for Speed: Detail {min_delay}-{max_delay}s")
         except Exception as e:
             logger.warning(f"Failed to load dynamic settings: {e}")
     else:
         logger.info(f"⚙️ Using Fast Defaults: {min_delay}-{max_delay}s")
 
+    
     # Ensure log directory exists
     os.makedirs(config.LOCAL_LOG_PATH, exist_ok=True)
     progress_file = config.PROGRESS_FILE
@@ -408,24 +431,21 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
     logger.info("📡 DB existence check engine initialized (Memory Efficient Mode)")
     for h in logging.getLogger().handlers: h.flush()
 
-    # [FIXED] Non-blocking Cleanup to prevent infinite hang (Monster Rule 3.2)
+    # [FIXED] Synchronous Cleanup to prevent race condition with new Playwright instance
     if sys.platform == "win32":
-        import subprocess
         try:
-            logger.info("🧹 Cleaning up old browser/driver processes (Non-blocking)...")
+            logger.info("🧹 Cleaning up old browser/driver processes (Skipped to prevent killing dashboard)...")
             for h in logging.getLogger().handlers: h.flush()
-            # os.system 대신 Popen으로 실행 후 기다리지 않음
-            subprocess.Popen("taskkill /f /im node.exe", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.Popen("taskkill /f /im chrome.exe /fi \"memusage lt 50000\"", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.Popen("taskkill /f /im msedge.exe /fi \"memusage lt 50000\"", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            # 타임아웃 0.5초만 주고 바로 다음으로 패스
-            time.sleep(0.5) 
         except: pass
 
     browser = None 
     try:
+        logger.info("DEBUG: Before async_playwright()")
+        print("DEBUG: Before async_playwright()", flush=True)
         async with async_playwright() as p:
 
+            logger.info("DEBUG: Inside async_playwright()")
+            print("DEBUG: Inside async_playwright()", flush=True)
             # Cloud-Compatible Browser Launch Logic
             browser = None
 
@@ -563,7 +583,6 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                     
                     try:
                         await page.goto(url, wait_until="networkidle")
-                        await asyncio.sleep(random.uniform(5, 8))
                         
                         # Block Detection
                         content = await page.content()
@@ -573,6 +592,7 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                             print("🛑 CRITICAL: IP BLOCK DETECTED. PLEASE STOP AND WAIT.", flush=True)
                             # Do not close browser here, let finally handle it.
                             return
+
                         
                         # Check for Map View and switch to list if necessary (Stronger detection)
                         # Naver often shows map first on mobile
@@ -808,7 +828,7 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                         for shop_idx, shop_data in enumerate(shops_to_visit):
                             if total_saved >= target_count: break
                             
-                            # [NEW] REPORT CURRENT TARGET IMMEDIATELY
+                            # [NEW] CURRENT_VERSION = "1.1.11" IMMEDIATELY
                             current_prog = {
                                 "success_count": total_saved,
                                 "estimated_total": estimated_total,
@@ -824,126 +844,80 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                                 print(f"PROGRESS_JSON: {json.dumps(full_prog, ensure_ascii=False)}", flush=True)
                             except: pass
                             
-                            shop_data.update({
-                                "owner_name": "",
-                                "address": "",
-                                "latitude": 0.0,
-                                "longitude": 0.0,
-                                "email": "",
-                                "instagram_handle": "",
-                                "naver_blog_id": "",
-                                "talk_url": ""
-                            })
-        
-                            if await extract_detail_info(page, shop_data):
-                                try:
-                                    if shop_data.get("name") and shop_data.get("address"):
-                                        # 🛡️ FINAL DEFENSE: Keyword Filtering Check (Detail Level)
-                                        # Re-check name in case detail extraction found a fuller name containing forbidden keywords
-                                        if any(ex in shop_data['name'] for ex in exclude_list):
-                                            logger.warning(f"🛡️ Filtered out shop at detail level: {shop_data['name']} (Exclusion)")
-                                            total_skipped += 1
-                                            continue
-                                        
-                                        # [FIXED] Address Verification: Strict Boundary Control (Monster Rule 3.2)
-                                        addr = shop_data.get('address', '')
-                                        is_valid_addr = False
-                                        
-                                        # Use 'targets' variable (Fixed NameError from target_areas)
-                                        for t_area in targets:
-                                            # 유연한 매칭: '경기도' <-> '경기', '서울특별시' <-> '서울' 등 지원
-                                            clean_t = t_area.replace("특별시", "").replace("광역시", "").replace("자치시", "").replace("도", "").strip()
-                                            tokens = clean_t.split()
-                                            
-                                            if len(tokens) >= 2:
-                                                core_region = " ".join(tokens[-2:]) 
-                                                if core_region in addr or clean_t in addr:
-                                                    is_valid_addr = True
-                                                    break
-                                            else:
-                                                if clean_t in addr:
-                                                    is_valid_addr = True
-                                                    break
-                                        
-                                        if not is_valid_addr:
-                                            logger.info(f"🚫 Filtered out (Out of Bounds): {shop_data['name']} ({addr}) | Target: {targets}")
-                                            total_skipped += 1
-                                            continue
-                                        
-                                        # [NEW] Multi-Mode Filtering Logic
-                                        if filter_mode != 'all':
-                                            # [SMART] Automatic Filter Keyword Injection
-                                            active_filter_kw = filter_keyword if filter_keyword else keyword.split()[-1]
-                                            target_val = shop_data.get('name', '') if filter_mode == 'name' else shop_data.get('category', '')
-                                            
-                                            if active_filter_kw.lower() not in target_val.lower():
-                                                logger.info(f"🛡️ Filtered out by Mode '{filter_mode}' (Keyword: {active_filter_kw}): {shop_data['name']}")
-                                                total_skipped += 1
-                                                continue
-
-                                        if save_to_db(shop_data):
-                                            total_saved += 1
-                                            logger.info(f"✅ Saved ({total_saved}/{target_count}): {shop_data.get('name')}")
-                                            
-                                            # [FIXED] Force immediate progress report WITH ETA (Monster Rule 3.2)
-                                            try:
-                                                elapsed_sec = int(time.time() - start_time)
-                                                processed = total_saved + total_skipped
-                                                avg_sec = elapsed_sec / processed if processed > 0 else 0
-                                                remain = max(0, estimated_total - processed)
-                                                
-                                                def format_sec(s):
-                                                    return f"{s // 3600:02}:{(s % 3600) // 60:02}:{s % 60:02}"
-
-                                                summary_data.update({
-                                                    "success_count": total_saved,
-                                                    "skip_count": total_skipped,
-                                                    "elapsed_sec": elapsed_sec,
-                                                    "elapsed_time": format_sec(elapsed_sec),
-                                                    "avg_time_per_item": round(avg_sec, 2),
-                                                    "remaining_time": format_sec(int(remain * avg_sec)),
-                                                    "completion_ratio": round(total_saved / estimated_total, 4) if estimated_total > 0 else 0,
-                                                    "current_stage": f"✅ [{keyword}] {shop_idx+1}/{len(shops_to_visit)}: {shop_data.get('name')} 추출 및 저장 완료!"
-                                                })
-                                                with open(progress_file, "w", encoding="utf-8") as f:
-                                                    json.dump(summary_data, f, ensure_ascii=False, indent=2)
-                                            except: pass
-                                    else:
-                                        logger.warning(f"⏩ Skipping shop {shop_data.get('name')} due to missing critical info (Address).")
-                                finally:
-                                    # Always update progress for general stats
-                                    elapsed_sec = int(time.time() - start_time)
-                                    # Calculate avg_sec using (saved + skipped) to show accurate speed
-                                    processed_items = total_saved + total_skipped
-                                    avg_sec = elapsed_sec / processed_items if processed_items > 0 else 0
-                                    remain = max(0, estimated_total - processed_items)
-                                    eta_sec = int(remain * avg_sec)
+                            try:
+                                if await extract_detail_info(page, shop_data):
+                                    # 🛡️ FINAL DEFENSE: Keyword Filtering Check (Detail Level)
+                                    if any(ex in shop_data['name'] for ex in exclude_list):
+                                        logger.warning(f"🛡️ Filtered out shop at detail level: {shop_data['name']} (Exclusion)")
+                                        total_skipped += 1
+                                        continue
                                     
-                                    def format_sec(s):
-                                        return f"{s // 3600:02}:{(s % 3600) // 60:02}:{s % 60:02}"
+                                    # Address Verification
+                                    addr = shop_data.get('address', '')
+                                    is_valid_addr = True if not targets else False
+                                    if targets:
+                                        for t_area in targets:
+                                            clean_t = t_area.replace("특별시", "").replace("광역시", "").replace("자치시", "").replace("도", "").strip()
+                                            if clean_t in addr:
+                                                is_valid_addr = True
+                                                break
+                                    
+                                    if not is_valid_addr:
+                                        logger.info(f"🚫 Filtered out (Out of Bounds): {shop_data['name']} ({addr})")
+                                        total_skipped += 1
+                                        continue
+                                    
+                                    # Multi-Mode Filtering
+                                    if filter_mode != 'all' and filter_keyword:
+                                        active_filter_kw = filter_keyword
+                                        target_val = shop_data.get('name', '') if filter_mode == 'name' else shop_data.get('category', '')
+                                        if active_filter_kw.lower() not in target_val.lower():
+                                            logger.info(f"🛡️ Filtered out by Mode '{filter_mode}': {shop_data['name']}")
+                                            total_skipped += 1
+                                            continue
 
-                                    completion_ratio = processed_items / estimated_total if estimated_total > 0 else 0
-                                    confidence = "초기 추정" if completion_ratio < 0.1 else "중간 추정" if completion_ratio < 0.4 else "안정 추정"
+                                    if save_to_db(shop_data):
+                                        total_saved += 1
+                                        logger.info(f"✅ Saved ({total_saved}/{target_count}): {shop_data.get('name')}")
                                         
-                                    summary_data = {
-                                        "run_started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(start_time)),
-                                        "success_count": total_saved,
-                                        "skip_count": total_skipped,
-                                        "error_count": total_errors,
-                                        "elapsed_sec": elapsed_sec,
-                                        "elapsed_time": format_sec(elapsed_sec),
-                                        "estimated_total": estimated_total,
-                                        "completion_ratio": round(completion_ratio, 4),
-                                        "avg_time_per_item": round(avg_sec, 2),
-                                        "remaining_time": format_sec(eta_sec),
-                                        "estimation_confidence": confidence,
-                                        "current_stage": f"🔄 [{keyword}] {shop_idx+1}/{len(shops_to_visit)}: 추출 및 검증 완료"
-                                    }
-                                    try:
-                                        with open(progress_file, "w", encoding="utf-8") as f:
-                                            json.dump(summary_data, f, ensure_ascii=False, indent=2)
-                                        print(f"PROGRESS_JSON: {json.dumps(summary_data, ensure_ascii=False)}", flush=True)
-                                    except: pass
+                                        # Force immediate progress report
+                                        try:
+                                            elapsed_sec = int(time.time() - start_time)
+                                            processed = total_saved + total_skipped
+                                            avg_sec = elapsed_sec / processed if processed > 0 else 0
+                                            remain = max(0, estimated_total - processed)
+                                            def f_s(s): return f"{s // 3600:02}:{(s % 3600) // 60:02}:{s % 60:02}"
+                                            summary_data.update({
+                                                "success_count": total_saved,
+                                                "skip_count": total_skipped,
+                                                "elapsed_time": f_s(elapsed_sec),
+                                                "remaining_time": f_s(int(remain * avg_sec)),
+                                                "current_stage": f"✅ [{keyword}] {shop_idx+1}/{len(shops_to_visit)}: {shop_data.get('name')} 저장 완료"
+                                            })
+                                            with open(progress_file, "w", encoding="utf-8") as f:
+                                                json.dump(summary_data, f, ensure_ascii=False, indent=2)
+                                        except: pass
+                                else:
+                                    logger.warning(f"⏩ Skipping shop {shop_data.get('name')} (Detail failure).")
+                            except Exception as detail_e:
+                                logger.error(f"⚠️ Detail Extraction Error for '{shop_data.get('name', 'Unknown')}': {detail_e}")
+                            finally:
+                                # Progress summary for UI monitoring
+                                try:
+                                    elapsed_sec = int(time.time() - start_time)
+                                    processed = total_saved + total_skipped
+                                    avg_sec = elapsed_sec / processed if processed > 0 else 0
+                                    remain = max(0, estimated_total - processed)
+                                    def f_s(s): return f"{s // 3600:02}:{(s % 3600) // 60:02}:{s % 60:02}"
+                                    summary_data.update({
+                                        "success_count": total_saved, "skip_count": total_skipped,
+                                        "elapsed_time": f_s(elapsed_sec), "remaining_time": f_s(int(remain * avg_sec)),
+                                        "completion_ratio": round(processed / estimated_total, 4) if estimated_total > 0 else 0
+                                    })
+                                    with open(progress_file, "w", encoding="utf-8") as f:
+                                        json.dump(summary_data, f, ensure_ascii=False, indent=2)
+                                    print(f"PROGRESS_JSON: {json.dumps(summary_data, ensure_ascii=False)}", flush=True)
+                                except: pass
                             
                             # [FAST] Aggressive delay for commercial speed
                             sleep_time = random.uniform(min_delay, max_delay)
@@ -987,8 +961,9 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
             print(f"PROGRESS_JSON: {json.dumps(prog_data, ensure_ascii=False)}", flush=True)
         except: pass
 
-    except Exception as e:
-        logger.error(f"Error in run_crawler session: {e}")
+    except BaseException as e:
+        logger.error(f"FATAL ERROR in run_crawler session (BaseException): {type(e).__name__} - {e}")
+        print(f"FATAL ERROR: {type(e).__name__} - {e}", flush=True)
     finally:
         # 🚀 FINAL SYNC REMOVED (Migrated to SQLite)
         logger.info("🏁 Crawling session finished. Data is safely stored in SQLite.")
@@ -998,8 +973,21 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
             logger.info("🌐 Browser closed.")
 
 if __name__ == "__main__":
+    import sys
+    import traceback
+    def global_excepthook(exc_type, exc_value, exc_traceback):
+        logger.error("UNHANDLED EXCEPTION", exc_info=(exc_type, exc_value, exc_traceback))
+        # Log fatal errors to the main app log instead of a separate file
+        try:
+            with open(config.ENGINE_LOG_FILE, "a", encoding="utf-8") as f:
+                f.write("\n" + "="*50 + "\n")
+                f.write(f"FATAL CRASH AT {datetime.now()}\n")
+                f.write("".join(traceback.format_exception(exc_type, exc_value, exc_traceback)))
+                f.write("="*50 + "\n")
+        except: pass
+    sys.excepthook = global_excepthook
+
     # Move immediate progress signaling to the ABSOLUTE START of execution
-    # Argument parsing
     # Argument parsing
     target = sys.argv[1] if len(sys.argv) > 1 else None
     if target in ["None", "전체", "전체 지역"]: target = None

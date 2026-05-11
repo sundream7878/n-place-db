@@ -21,7 +21,7 @@ except ImportError:
 
 # Configure logging to file for debugging
 logging.basicConfig(
-    filename=os.path.join(config.LOCAL_LOG_PATH, "app_debug.log"),
+    filename=config.ENGINE_LOG_FILE,
     level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     encoding="utf-8"
@@ -524,12 +524,37 @@ class MainApp(ctk.CTk):
         except Exception as e:
             logger.error(f"Error refreshing table: {e}")
 
-        except Exception as e:
-            logger.error(f"Error refreshing table: {e}")
-
 if __name__ == "__main__":
     import multiprocessing
+    import sys
+    import os
+
     multiprocessing.freeze_support()
+    
+    # [CRITICAL FIX] Windows PyInstaller --noconsole + asyncio + subprocess bug
+    # ProactorEventLoop crashes silently (Exit 0) if stdin/stdout/stderr don't have valid OS file descriptors.
+    if sys.platform == "win32" and getattr(sys, 'frozen', False):
+        try:
+            # [CRITICAL] Redirect ALL output to a file because --noconsole has no stdout/stderr handles
+            log_path = config.ENGINE_LOG_FILE
+            log_dir = os.path.dirname(log_path)
+            os.makedirs(log_dir, exist_ok=True)
+            log_fd = os.open(log_path, os.O_RDWR | os.O_CREAT | os.O_APPEND)
+            os.dup2(log_fd, 1) # stdout
+            os.dup2(log_fd, 2) # stderr
+            
+            # [FIX] Force Python to use UTF-8 for the new file descriptors
+            import io
+            sys.stdout = io.TextIOWrapper(os.fdopen(1, 'wb'), encoding='utf-8', errors='replace')
+            sys.stderr = io.TextIOWrapper(os.fdopen(2, 'wb'), encoding='utf-8', errors='replace')
+            
+            devnull = os.open(os.devnull, os.O_RDONLY)
+            os.dup2(devnull, 0) # stdin
+            print(f"\n--- Launcher Started at {time.ctime()} ---", flush=True)
+            print(f"Executable: {sys.executable}", flush=True)
+            print(f"Args: {sys.argv}", flush=True)
+        except Exception as e:
+            pass
     
     # [FIX] Intercept arguments for PyInstaller packaged executable
     if len(sys.argv) > 1:
@@ -589,10 +614,13 @@ if __name__ == "__main__":
                 try:
                     runpy.run_path(script_path, run_name="__main__")
                 except SystemExit as e:
+                    print(f"DEBUG LAUNCHER: Caught SystemExit {e.code}", flush=True)
                     sys.exit(e.code)
                 except Exception as e:
+                    print(f"DEBUG LAUNCHER: Caught Exception {e}", flush=True)
                     logger.error(f"Error running {base_name}: {e}", exc_info=True)
                     sys.exit(1)
+                print("DEBUG LAUNCHER: run_path completed normally, exiting 0", flush=True)
                 sys.exit(0)
             else:
                 logger.error(f"Could not find script: {base_name}")
@@ -603,23 +631,14 @@ if __name__ == "__main__":
 
     logger.info("Application starting (Launcher Mode)...")
     
-    # [FIX] Force close splash screen after 3 seconds & Add dynamic animation
-    def auto_dismiss_splash():
-        try:
-            import time
-            import pyi_splash
-            
-            # Dynamic Loading Animation
-            for i in range(15): # 3 seconds total (15 * 0.2s)
-                dots = "." * (i % 4)
-                pyi_splash.update_text(f"Marketing Engine Initializing{dots}")
-                time.sleep(0.2)
-                
+    logger.info("Application starting (Launcher Mode)...")
+    
+    try:
+        import pyi_splash
+        if pyi_splash.is_available():
             pyi_splash.close()
-            logger.info("Splash screen auto-closed after animation.")
-        except:
-            pass
-    threading.Thread(target=auto_dismiss_splash, daemon=True).start()
+    except:
+        pass
 
     try:
         # Check for data directory presence
