@@ -19,13 +19,18 @@ try:
 except ImportError:
     pyi_splash = None
 
-# Configure logging to file for debugging
-logging.basicConfig(
-    filename=config.ENGINE_LOG_FILE,
-    level=logging.DEBUG,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    encoding="utf-8"
-)
+# Configure logging to file ONLY (prevent StreamHandler crashes in frozen mode)
+try:
+    log_file = config.ENGINE_LOG_FILE
+    log_dir = os.path.dirname(log_file)
+    os.makedirs(log_dir, exist_ok=True)
+    logging.basicConfig(
+        handlers=[logging.FileHandler(log_file, encoding='utf-8', mode='a')],
+        level=logging.DEBUG,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        force=True
+    )
+except: pass
 logger = logging.getLogger(__name__)
 
 # [가이드 준수] Premium Dark Mode Configuration
@@ -588,8 +593,8 @@ if __name__ == "__main__":
             if len(sys.argv) > 2:
                 exec(sys.argv[2])
             sys.exit(0)
-        elif "step1_" in sys.argv[1] or "engine_recover_missing" in sys.argv[1]:
-            # e.g., "step1_refined_crawler.py"
+        elif "step1_" in sys.argv[1] or "engine_recover_missing" in sys.argv[1] or "safe_messenger" in sys.argv[1]:
+            # e.g., "step1_refined_crawler.py" or "safe_messenger.py"
             import os
             import runpy
             arg1 = sys.argv[1]

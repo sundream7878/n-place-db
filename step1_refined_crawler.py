@@ -134,14 +134,9 @@ async def extract_detail_info(page, shop_data):
                         shop_data["address"] = val["address"]
                     
                     # Coordinates
-                    if "coordinate" in val:
-                        coord = val["coordinate"]
-                        shop_data["longitude"] = float(coord.get("x", 0.0))
-                        shop_data["latitude"] = float(coord.get("y", 0.0))
+                    # [REMOVED] Coordinates extraction
                     
-                    # TalkTalk
-                    if "talktalkUrl" in val and val["talktalkUrl"]:
-                        shop_data["talk_url"] = val["talktalkUrl"].strip()
+                    # [REMOVED] TalkTalk extraction
                     
                     # Category (for filtering)
                     if "category" in val and val["category"]:
@@ -198,7 +193,7 @@ async def extract_detail_info(page, shop_data):
                 shop_data["owner_name"] = owner_match.group(1)
 
         # 3. DOM Link Fallback (If Apollo failed)
-        if not shop_data.get("instagram_handle") or not shop_data.get("naver_blog_id") or not shop_data.get("talk_url"):
+        if not shop_data.get("instagram_handle") or not shop_data.get("naver_blog_id"):
             
             # Instagram Logic Improvement
             if not shop_data.get("instagram_handle"):
@@ -232,11 +227,7 @@ async def extract_detail_info(page, shop_data):
                         handle = shop_data["naver_blog_id"].strip("/").split("/")[-1]
                         if handle: shop_data["email"] = f"{handle}@naver.com"
 
-            # TalkTalk
-            if not shop_data.get("talk_url"):
-                talk_match = re.search(r'href="(https://talk\.naver\.com/[^"]+)"', content)
-                if talk_match:
-                    shop_data["talk_url"] = talk_match.group(1)
+            pass # TalkTalk extraction removed
 
         return True
     except Exception as e:
@@ -867,12 +858,14 @@ async def run_crawler(target_area=None, target_count=10, resume=False, custom_ke
                                         total_skipped += 1
                                         continue
                                     
-                                    # Multi-Mode Filtering
+                                    # Multi-Mode Filtering (Rule 3.2 Optimization)
                                     if filter_mode != 'all' and filter_keyword:
-                                        active_filter_kw = filter_keyword
-                                        target_val = shop_data.get('name', '') if filter_mode == 'name' else shop_data.get('category', '')
-                                        if active_filter_kw.lower() not in target_val.lower():
-                                            logger.info(f"🛡️ Filtered out by Mode '{filter_mode}': {shop_data['name']}")
+                                        filter_kws = [k.strip().lower() for k in filter_keyword.split(",") if k.strip()]
+                                        target_val = (shop_data.get('name', '') if filter_mode == 'name' else shop_data.get('category', '')).lower()
+                                        
+                                        # Match if ANY of the filter keywords are present in the target value
+                                        if not any(k in target_val for k in filter_kws):
+                                            logger.info(f"🛡️ Filtered out by Mode '{filter_mode}': {shop_data['name']} (Keyword mismatch)")
                                             total_skipped += 1
                                             continue
 

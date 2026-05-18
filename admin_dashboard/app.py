@@ -97,30 +97,23 @@ def get_crypto_key():
 def encrypt_pw(pw):
     if not pw: return ""
     try:
-        key = get_crypto_key()
-        encoded = []
-        for i in range(len(pw)):
-            key_c = key[i % len(key)]
-            encoded_c = chr(ord(pw[i]) ^ ord(key_c))
-            encoded.append(encoded_c)
-        return base64.b64encode("".join(encoded).encode()).decode()
+        key = get_crypto_key().encode('utf-8')
+        data = pw.encode('utf-8')
+        res = bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
+        return base64.b64encode(res).decode('utf-8')
     except: return pw
 
 def decrypt_pw(enc_pw):
     if not enc_pw: return ""
     try:
-        key = get_crypto_key()
-        decoded_raw = base64.b64decode(enc_pw).decode()
-        decrypted = []
-        for i in range(len(decoded_raw)):
-            key_c = key[i % len(key)]
-            decrypted_c = chr(ord(decoded_raw[i]) ^ ord(key_c))
-            decrypted.append(decrypted_c)
-        return "".join(decrypted)
+        key = get_crypto_key().encode('utf-8')
+        data = base64.b64decode(enc_pw)
+        res = bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
+        return res.decode('utf-8')
     except: return enc_pw
 
 # --- 1. Setup & Functions ---
-TEMPLATE_FILE = os.path.join(os.path.dirname(__file__), "templates.json")
+TEMPLATE_FILE = config.LOCAL_TEMPLATE_FILE
 
 def load_templates():
     if os.path.exists(TEMPLATE_FILE):
@@ -136,14 +129,20 @@ def load_templates():
             data["insta_pw"] = decrypt_pw(data.get("insta_pw", ""))
             return data
     return {
-        "email_profiles": {}, 
-        "active_email_profile": "",
-        "insta_profiles": {}, 
-        "active_insta_profile": "",
+        "email_profiles": {
+            "example@naver.com": {"pw": "", "smtp": "smtp.naver.com", "port": 465}
+        }, 
+        "active_email_profile": "chiu3@naver.com",
+        "insta_profiles": {
+            "jinwook.han7878": {"pw": decrypt_pw("KCxRKSh+DnkKGg==")}
+        }, 
+        "active_insta_profile": "jinwook.han7878",
         "naver_user": "", "naver_pw": "", "insta_user": "", "insta_pw": "",
-        "tpl_A": {"subject": "안녕하세요, {상호명} 원장님!", "body": "원장님 안녕하세요! 마케팅 몬스터입니다."},
+        "tpl_A": {"subject": "안녕하세요, {상호명} 원장님!", "body": "원장님 안녕하세요! 마케팅 몬스터입니다.", "sender_name": "", "sender_names": []},
         "tpl_B": "안녕하세요! 네이버 톡톡 메시지입니다.",
-        "tpl_C": "인스타그램 DM 메시지입니다."
+        "tpl_C": "인스타그램 DM 메시지입니다.",
+        "test_recipients_A": ["", "", ""],
+        "test_recipients_C": ["", "", ""]
     }
 
 def save_templates():
@@ -156,6 +155,14 @@ def save_templates():
     for email in email_p: email_p[email]["pw"] = encrypt_pw(email_p[email].get("pw", ""))
     for insta in insta_p: insta_p[insta]["pw"] = encrypt_pw(insta_p[insta].get("pw", ""))
 
+    # --- Ensure sender_name is saved to the history list if new ---
+    tpl_A = st.session_state.get('tpl_A', {})
+    current_name = tpl_A.get('sender_name', '').strip()
+    history_names = tpl_A.get('sender_names', [])
+    if current_name and current_name not in history_names:
+        history_names.append(current_name)
+        tpl_A['sender_names'] = history_names
+
     data = {
         "email_profiles": email_p,
         "active_email_profile": st.session_state.get('active_email_profile', ''),
@@ -165,9 +172,11 @@ def save_templates():
         "naver_pw": encrypt_pw(st.session_state.get('naver_pw', '')),
         "insta_user": st.session_state.get('insta_user', ''),
         "insta_pw": encrypt_pw(st.session_state.get('insta_pw', '')),
-        "tpl_A": st.session_state.get('tpl_A', {}),
+        "tpl_A": tpl_A,
         "tpl_B": st.session_state.get('tpl_B', ''),
-        "tpl_C": st.session_state.get('tpl_C', '')
+        "tpl_C": st.session_state.get('tpl_C', ''),
+        "test_recipients_A": st.session_state.get('test_recipients_A', ["", "", ""]),
+        "test_recipients_C": st.session_state.get('test_recipients_C', ["", "", ""])
     }
     with open(TEMPLATE_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=4)
     st.toast("✅ 설정이 안전하게 암호화되어 저장되었습니다.")
@@ -178,6 +187,11 @@ def load_local_data():
     if not data: return pd.DataFrame()
     
     df = pd.DataFrame(data)
+    
+    # [NEW] Drop unwanted columns for a cleaner UI/Export (Rule 3.2)
+    unwanted = ["latitude", "longitude", "talk_url", "owner_name"]
+    df = df.drop(columns=[col for col in unwanted if col in df.columns], errors='ignore')
+    
     # [NEW] Insert 'No' column at the very beginning
     df.insert(0, "No", range(1, len(df) + 1))
     
@@ -185,7 +199,7 @@ def load_local_data():
     mapping = {
         "name": "상호명", "address": "주소", "phone": "번호", 
         "email": "이메일", "instagram_handle": "인스타", 
-        "talk_url": "톡톡링크", "detail_url": "플레이스링크",
+        "detail_url": "플레이스링크",
         "last_result_email": "결과(E)", "last_msg_email": "로그(E)",
         "last_result_insta": "결과(I)", "last_msg_insta": "로그(I)"
     }
@@ -302,10 +316,24 @@ def get_live_logs(n=1000):
         return "수집 로그가 아직 없습니다."
     return "\n".join(combined_logs)
 
-def send_email(user, pw, target, subject, body, smtp_server="smtp.naver.com", attachments=None):
+from email.header import Header
+
+def send_email(user, pw, target, subject, body, smtp_server="smtp.naver.com", smtp_port=465, attachments=None, sender_name=None):
     try:
+        # [FIX] Force strip to prevent credential errors
+        user = user.strip() if user else ""
+        pw = pw.strip() if pw else ""
+        
         msg = MIMEMultipart()
-        msg['From'] = user
+        # [FIX] Ensure valid RFC-5322 From address (Especially for Naver)
+        from_addr = user
+        if "@" not in from_addr and "naver.com" in smtp_server.lower():
+            from_addr = f"{from_addr}@naver.com"
+            
+        if sender_name:
+            msg['From'] = f"{Header(sender_name, 'utf-8').encode()} <{from_addr}>"
+        else:
+            msg['From'] = from_addr
         msg['To'] = target
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'plain'))
@@ -316,11 +344,55 @@ def send_email(user, pw, target, subject, body, smtp_server="smtp.naver.com", at
                 part['Content-Disposition'] = f'attachment; filename="{att["name"]}"'
                 msg.attach(part)
         
-        with smtplib.SMTP_SSL(smtp_server, 465) as server:
-            server.login(user, pw)
-            server.send_message(msg)
+        # [NEW] Multi-Port Support (SSL vs STARTTLS)
+        try:
+            port_val = int(smtp_port) if smtp_port else 465
+        except:
+            port_val = 465
+
+        if port_val == 465:
+            with smtplib.SMTP_SSL(smtp_server, port_val, timeout=15) as server:
+                server.login(user, pw)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_server, port_val, timeout=15) as server:
+                server.set_debuglevel(0)
+                server.starttls()
+                server.login(user, pw)
+                server.send_message(msg)
         return True, None
-    except Exception as e: return False, str(e)
+    except smtplib.SMTPAuthenticationError as e:
+        err_msg = str(e)
+        if "535" in err_msg:
+            return False, "로그인 실패 (535): 아이디/비번 불일치.\n\n[체크리스트]\n1. 네이버 '앱 암호'(16자리)를 사용 중인가요? (일반 비번 X)\n2. 네이버 메일 설정에서 'IMAP/SMTP'가 '사용함'인가요?\n3. 비번 끝에 ')' 같은 오타가 포함되지 않았나요?"
+        return False, f"인증 오류: {err_msg}"
+    except Exception as e:
+        err_msg = str(e)
+        if "553" in err_msg:
+            return False, "발송 거절 (553): 발신자 주소 형식 오류.\n계정 아이디가 정확한 이메일 형식(예: abc@naver.com)인지 확인해 주세요."
+        return False, err_msg
+
+def test_smtp_connection(user, pw, smtp_server, smtp_port):
+    try:
+        user = user.strip()
+        pw = pw.strip()
+        port_val = int(smtp_port)
+        
+        if port_val == 465:
+            with smtplib.SMTP_SSL(smtp_server, port_val, timeout=10) as server:
+                server.login(user, pw)
+        else:
+            with smtplib.SMTP(smtp_server, port_val, timeout=10) as server:
+                server.starttls()
+                server.login(user, pw)
+        return True, "✅ 연결 성공! 이 계정으로 메일을 보낼 수 있습니다."
+    except smtplib.SMTPAuthenticationError as e:
+        err_msg = str(e)
+        if "535" in err_msg:
+            return False, "❌ 인증 실패 (535): 아이디 또는 비밀번호가 틀립니다. 네이버 '앱 암호'를 확인해 주세요."
+        return False, f"❌ 인증 오류: {err_msg}"
+    except Exception as e:
+        return False, f"❌ 연결 실패: {str(e)}"
 
 def format_tpl(text, shop_name):
     if not text: return ""
@@ -364,20 +436,20 @@ st.markdown("""
     
     .section-container {
         background: white; 
-        border: 2px solid #CBD5E1; 
-        border-radius: 20px; 
-        padding: 2rem; 
-        margin-bottom: 2rem;
-        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
+        border: 1.5px solid #94A3B8; 
+        border-radius: 15px; 
+        padding: 1.2rem; 
+        margin-bottom: 1rem;
+        box-shadow: 0 4px 15px -5px rgba(0, 0, 0, 0.05);
         transition: all 0.2s ease;
     }
-    .section-container:hover { border-color: #00E676; transform: translateY(-2px); }
+    .section-container:hover { border-color: #00E676; transform: translateY(-1px); }
 
     .section-title { 
-        font-size: 1.4rem; font-weight: 900; color: #0F172A; 
-        margin-bottom: 1.2rem; display: flex; align-items: center; gap: 12px; 
+        font-size: 1.2rem; font-weight: 900; color: #0F172A; 
+        margin-bottom: 0.8rem; display: flex; align-items: center; gap: 10px; 
     }
-    .input-label { font-size: 0.95rem; font-weight: 800; color: #334155; margin-bottom: 8px; }
+    .input-label { font-size: 0.9rem; font-weight: 800; color: #334155; margin-bottom: 6px; }
 
     .stProgress > div > div > div > div {
         background: linear-gradient(to right, #00E676, #00C853);
@@ -385,19 +457,49 @@ st.markdown("""
     }
 
     [data-testid="stDataFrame"] {
-        border: 2px solid #CBD5E1; border-radius: 15px; overflow: hidden;
+        border: 1.5px solid #94A3B8; border-radius: 12px; overflow: hidden;
     }
 
     .status-card { 
-        background: #F8FAFC; border-radius: 15px; padding: 1.2rem; 
-        border: 2px solid #E2E8F0; 
+        background: #F8FAFC; border-radius: 12px; padding: 1rem; 
+        border: 1.5px solid #94A3B8; 
     }
     
     .log-container {
-        background-color: #0F172A; color: #38BDF8; padding: 20px; border-radius: 15px;
-        font-family: 'Consolas', monospace; font-size: 0.9rem; height: 450px;
-        overflow-y: auto; white-space: pre-wrap; border: 2px solid #1E293B;
+        background-color: #0F172A !important; 
+        color: #38BDF8 !important; 
+        padding: 20px !important; 
+        border-radius: 15px !important;
+        font-family: 'JetBrains Mono', 'Consolas', monospace !important; 
+        font-size: 0.9rem !important; 
+        height: 450px !important;
+        max-height: 450px !important;
+        overflow-y: auto !important; 
+        white-space: pre-wrap !important; 
+        border: 2px solid #1E293B !important;
+        box-shadow: inset 0 2px 10px rgba(0,0,0,0.5) !important;
+        position: relative !important;
+        display: block !important;
     }
+    
+    /* [FIX] 전용 스크롤바 강제 적용 */
+    .log-container::-webkit-scrollbar {
+        width: 10px !important;
+        display: block !important;
+    }
+    .log-container::-webkit-scrollbar-track {
+        background: #1E293B !important;
+        border-radius: 10px !important;
+    }
+    .log-container::-webkit-scrollbar-thumb {
+        background: #475569 !important;
+        border-radius: 10px !important;
+        border: 2px solid #1E293B !important;
+    }
+    .log-container::-webkit-scrollbar-thumb:hover {
+        background: #64748B !important;
+    }
+    
 
     .stButton button { 
         border-radius: 12px !important; font-weight: 800 !important;
@@ -406,7 +508,7 @@ st.markdown("""
 
     /* [NEW] 선명한 입력창 스타일 */
     .stTextInput input, .stTextArea textarea, [data-baseweb="select"] {
-        border: 1.5px solid #CBD5E1 !important; /* 선명한 회색 테두리 */
+        border: 1.5px solid #94A3B8 !important; /* 선명한 회색 테두리 */
         border-radius: 10px !important;
         background-color: #FFFFFF !important;
         transition: all 0.2s ease-in-out !important;
@@ -417,7 +519,12 @@ st.markdown("""
     }
 
     [data-testid="stHeader"] { background: rgba(255,255,255,0.9); backdrop-filter: blur(12px); }
-    .block-container { padding-top: 0rem !important; padding-bottom: 10rem !important; }
+    .block-container { padding-top: 1rem !important; padding-bottom: 5rem !important; }
+    
+    /* Global vertical gap reduction */
+    [data-testid="stVerticalBlock"] {
+        gap: 0.7rem !important;
+    }
     
     [data-testid="stVerticalBlock"] > div:has(.nav-anchor) {
         position: sticky; top: 0; z-index: 1000;
@@ -546,7 +653,7 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
         # --- [NEW] Unified Multi-Profile Management (Email & Instagram) ---
         p_key = 'email_profiles' if track_id == 'A' else 'insta_profiles'
         a_key = 'active_email_profile' if track_id == 'A' else 'active_insta_profile'
-        p_label = "📧 등록된 이메일 프로필" if track_id == 'A' else "📸 등록된 인스타 프로필"
+        p_label = "📧 등록된 이메일 ID 프로필" if track_id == 'A' else "📸 등록된 인스타 ID 프로필"
         p_placeholder = "발송할 이메일을 선택하세요" if track_id == 'A' else "발송할 인스타 계정을 선택하세요"
         
         profiles = st.session_state.get(p_key, {})
@@ -554,7 +661,12 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
         
         c_sel, c_add = st.columns([3, 1])
         with c_sel:
+            # [MOD] Auto-select first profile if none active
             active_p = st.session_state.get(a_key, '')
+            if not active_p and p_list:
+                active_p = p_list[0]
+                st.session_state[a_key] = active_p
+
             sel_p = st.selectbox(p_label, options=p_list, 
                                  index=p_list.index(active_p) if active_p in p_list else None,
                                  placeholder=p_placeholder, key=f"{p_key}_selector")
@@ -562,17 +674,26 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
 
         with c_add:
             st.markdown('<div style="margin-top:28px;"></div>', unsafe_allow_html=True)
-            show_add = st.checkbox("➕ 새 계정 추가", value=False if p_list else True, key=f"show_add_{track_id}")
+            add_visible = st.session_state.get(f'show_add_v2_{track_id}', False)
+            btn_txt = "❌ 닫기" if add_visible else "➕ 계정 추가"
+            if st.button(btn_txt, key=f"btn_add_v2_{track_id}", use_container_width=True):
+                st.session_state[f'show_add_v2_{track_id}'] = not add_visible
+                st.rerun()
 
-        if show_add:
+        if st.session_state.get(f'show_add_v2_{track_id}', False):
             with st.container(border=True):
                 st.markdown(f"**✨ 새로운 {label} 계정 등록**")
                 c1, c2 = st.columns(2)
                 if track_id == 'A':
-                    new_id = c1.text_input("발송용 이메일 ID", placeholder="example@naver.com", key="new_email_id_v2")
-                    new_pw = c2.text_input("비밀번호 (앱 암호)", type="password", key="new_email_pw_v2")
+                    new_id = c1.text_input("발송용 네이버 이메일 ID", placeholder="아이디만 입력해도 됩니다", help="예: 'chiu3' 만 입력하면 자동으로 'chiu3@naver.com'이 됩니다.", key="new_email_id_v2")
+                    new_pw = c2.text_input("🔑 비밀번호 (앱 암호)", type="password", help="네이버/Gmail은 반드시 '앱 암호'를 발급받아 입력해야 합니다.", key="new_email_pw_v2")
+                    with c2:
+                        st.caption("⚠️ **주의**: 일반 비밀번호가 아닌, 2단계 인증 설정 후 발급받은 **'앱 암호'**를 입력해 주세요.")
                     
-                    # Auto-detect SMTP
+                    # Auto-detect SMTP and Correct ID format
+                    if new_id and "@" not in new_id:
+                        new_id = f"{new_id.strip()}@naver.com"
+                    
                     def_smtp, def_port = "smtp.naver.com", 465
                     if "@gmail.com" in new_id.lower(): def_smtp, def_port = "smtp.gmail.com", 465
                     elif "@daum.net" in new_id.lower() or "@hanmail.net" in new_id.lower(): def_smtp, def_port = "smtp.daum.net", 465
@@ -587,6 +708,7 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
                 
                 if st.button("💾 이 계정 저장하기", use_container_width=True, key=f"save_new_{track_id}"):
                     if new_id and new_pw:
+                        new_pw = new_pw.strip() # [FIX] Auto-strip
                         if track_id == 'A':
                             profiles[new_id] = {"pw": new_pw, "smtp": def_smtp, "port": def_port}
                         else:
@@ -616,10 +738,25 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
                 
                 if is_open:
                     st.markdown("---")
-                    c_pw, c_btn = st.columns([3, 1], vertical_alignment="bottom")
-                    new_pw_edit = c_pw.text_input("🔑 비밀번호 수정", value=p_info['pw'], type="password", key=f"edit_pw_{active_p}")
-                    if c_btn.button("💾 저장", key=f"save_pw_{active_p}", use_container_width=True):
-                        profiles[active_p]['pw'] = new_pw_edit
+                    if track_id == 'A':
+                        sc1, sc2 = st.columns(2)
+                        sc1.text_input("⚙️ 서버 정보 (SMTP)", value=p_info.get('smtp', 'smtp.naver.com'), disabled=True, key=f"disp_smtp_{active_p}")
+                        sc2.text_input("🔌 포트 (Port)", value=str(p_info.get('port', 465)), disabled=True, key=f"disp_port_{active_p}")
+                    c_pw, c_test, c_save = st.columns([2.5, 1, 1], vertical_alignment="bottom")
+                    new_pw_edit = c_pw.text_input("🔑 비밀번호 수정 (앱 암호)", value=p_info['pw'], type="password", help="네이버/Gmail 앱 암호 16자리를 입력하세요.", key=f"edit_pw_{active_p}")
+                    st.caption("※ 네이버 일반 비밀번호를 입력하면 발송에 실패합니다.")
+                    
+                    if c_test.button("🔍 연결 테스트", key=f"test_conn_{active_p}", use_container_width=True):
+                        if track_id == 'A':
+                            with st.spinner("서버 연결 확인 중..."):
+                                ok, msg = test_smtp_connection(active_p, new_pw_edit, p_info.get('smtp', 'smtp.naver.com'), p_info.get('port', 465))
+                                if ok: st.success(msg)
+                                else: st.error(msg)
+                        else:
+                            st.info("인스타 연결 테스트는 준비 중입니다. 발송 시작 시 확인됩니다.")
+
+                    if c_save.button("💾 저장", key=f"save_pw_{active_p}", use_container_width=True):
+                        profiles[active_p]['pw'] = new_pw_edit.strip() # [FIX] Auto-strip
                         st.session_state[p_key] = profiles
                         save_templates()
                         st.success("비밀번호가 수정되었습니다.")
@@ -634,16 +771,111 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
                         save_templates()
                         st.rerun()
 
+        # [NEW] Test Recipient Setup (Rule 3.3)
+        st.markdown("---")
+        t_key = f"test_recipients_{track_id}"
+        st.markdown(f"**🧪 테스트 수신자 설정 (최대 3명)**")
+        st.caption("설정 후 아래 저장 버튼을 누르면 목록 상단에 '✨ [테스트]' 업체로 등록됩니다.")
+        
+        # Load from session state (which was loaded from file in load_templates)
+        t_recs = st.session_state.get(t_key, ["", "", ""])
+        
+        tc1, tc2, tc3 = st.columns(3)
+        placeholder = "수신 이메일 주소" if track_id == 'A' else "인스타그램 ID"
+        v1 = tc1.text_input("테스트 수신자 1", value=t_recs[0], placeholder=placeholder, key=f"tr1_{track_id}")
+        v2 = tc2.text_input("테스트 수신자 2", value=t_recs[1], placeholder=placeholder, key=f"tr2_{track_id}")
+        v3 = tc3.text_input("테스트 수신자 3", value=t_recs[2], placeholder=placeholder, key=f"tr3_{track_id}")
+        
+        if st.button("🧪 테스트 수신자 적용 및 저장", key=f"btn_test_save_{track_id}", use_container_width=True):
+            st.session_state[t_key] = [v1, v2, v3]
+            save_templates()
+            st.success("테스트 수신자가 저장되었습니다. 목록에 즉시 반영됩니다.")
+            time.sleep(0.5)
+            st.rerun()
+
         st.markdown("---")
         if track_id == 'A':
-            st.session_state['tpl_A']['subject'] = st.text_input("메일 제목", value=st.session_state['tpl_A']['subject'])
+            # [MOD] Space Optimization: Subject and Save Button on same line
+            c_subj, c_save = st.columns([4, 1.2], vertical_alignment="bottom")
+            with c_subj:
+                st.session_state['tpl_A']['subject'] = st.text_input("메일 제목", value=st.session_state['tpl_A']['subject'])
+            with c_save:
+                if st.button("설정 및 템플릿 저장", key=f"save_{track_id}", use_container_width=True): save_templates()
+                
             st.session_state['tpl_A']['body'] = st.text_area("메일 내용", value=st.session_state['tpl_A']['body'], height=250)
+            
+            # [NEW] Sender Name Customization with History List
+            history = st.session_state['tpl_A'].get('sender_names', [])
+            current_n = st.session_state['tpl_A'].get('sender_name', '')
+            
+            c_sel, c_del = st.columns([4, 1], vertical_alignment="bottom")
+            with c_sel:
+                # Add current if not in history for the options
+                opts = ["✨ 직접 입력 / 새 이름 추가"] + history
+                default_idx = history.index(current_n) + 1 if current_n in history else 0
+                selected_opt = st.selectbox("발신인 이름 선택", options=opts, index=default_idx)
+            
+            with c_del:
+                if st.button("🗑️ 삭제", key="del_sender_name", use_container_width=True, disabled=(selected_opt.startswith("✨"))):
+                    if selected_opt in history:
+                        history.remove(selected_opt)
+                        st.session_state['tpl_A']['sender_names'] = history
+                        save_templates()
+                        st.rerun()
+
+            if selected_opt.startswith("✨"):
+                st.session_state['tpl_A']['sender_name'] = st.text_input("새 발신인 이름 입력", 
+                                                                        value=current_n if current_n not in history else "",
+                                                                        placeholder="예: 마케팅몬스터 CS팀")
+            else:
+                st.session_state['tpl_A']['sender_name'] = selected_opt
+                st.info(f"선택됨: **{selected_opt}**")
+
+            st.caption("💡 추천 트렌드: [업체명] 담당자, [공지] 브랜드명, 이름 (직함) 등")
             st.caption("💡 {상호명} 입력 시 업체명이 자동으로 치환됩니다.")
         else:
-            st.session_state[f'tpl_{track_id}'] = st.text_area("DM 메시지 내용", value=st.session_state.get(f'tpl_{track_id}', ''), height=200)
+            # [MOD] Instagram Space Optimization: Subject (Header) and Save Button on same line
+            c_header, c_save = st.columns([4, 1.2], vertical_alignment="bottom")
+            with c_header:
+                st.markdown("**DM 메시지 내용**")
+            with c_save:
+                if st.button("설정 및 템플릿 저장", key=f"save_{track_id}", use_container_width=True): save_templates()
+
+            st.session_state[f'tpl_{track_id}'] = st.text_area("DM 메시지 내용", label_visibility="collapsed", value=st.session_state.get(f'tpl_{track_id}', ''), height=200)
             st.caption("💡 {상호명} 입력 시 업체명이 자동으로 치환됩니다.")
-        
-        if st.button("설정 및 템플릿 저장", key=f"save_{track_id}", use_container_width=True): save_templates()
+            
+            # [NEW] Beautiful Instagram DM Marketing Strategy Expander
+            with st.expander("💡 인스타 DM 마케팅 성공률 300% 올리는 노하우 & 계정 관리 가이드"):
+                st.markdown("""
+                ### 🚀 스팸 폴더(요청함)를 피하고 오픈율을 극대화하는 계정 관리 전략
+                
+                인스타그램은 스팸을 방지하기 위해 매우 엄격한 필터링 시스템을 가지고 있습니다. **처음 발송을 시작하시기 전에 아래 가이드를 반드시 숙지해 주세요!**
+                
+                ---
+                
+                #### 1. 🛡️ 발송 계정 최적화 (Warm-up)
+                * **활동 이력(Trust Score)이 가장 중요합니다:**
+                    * 가입 후 거의 사용하지 않은 신규 계정(예: 수집 전용 계정)은 인스타 필터링 봇의 최우선 타겟입니다.
+                    * **평소 다른 사람들과 디엠을 나누고, 스크롤을 내리며 좋아요를 누르던 활동적인 실사용 계정**(예: 부인분 계정)일수록 스팸 차단 필터를 가볍게 통과합니다.
+                * **사람처럼 보이도록 셋팅하기 (필수):**
+                    * 프로필 사진을 반드시 등록하세요 (기본 아이콘 X).
+                    * 프로필 소개란에 한 줄 소개(예: "로컬 비즈니스 마케팅 컨설턴트")를 작성해 주세요.
+                    * 일반 사진 게시물을 최소 2~3개 이상 등록하여 유령 계정이 아님을 증명하세요.
+                
+                #### 2. 📝 메시지 개인화 및 맞춤형 인사 (Personalization)
+                * **기계적인 자동 발송처럼 보이지 않게 작성하기:**
+                    * `{상호명}` 태그를 섞어서 발송하세요. 인스타 AI 필터는 대량의 동일 메시지를 감지하여 스팸으로 분류합니다. `{상호명}`이 들어가면 각 타겟마다 메시지가 달라지므로 차단 확률이 급격히 낮아집니다.
+                    * *추천 예시: "안녕하세요 {상호명} 원장님! 피드 구경하다가 너무 멋져서 정중히 제안드리고자 연락드렸습니다..."*
+                
+                #### 3. 📩 "메시지 요청(Requests)"의 특성 이해
+                * 서로 팔로우 관계가 아닌 상태에서 DM을 보내면, 상대방의 일반 편지함이 아닌 **[메시지 요청]** 폴더로 들어갑니다.
+                * **오픈율이 매우 높습니다:** 자영업자/원장님들은 인스타 DM을 통해 실제 고객 문의가 끊임없이 들어오기 때문에, 모르는 계정의 [요청]도 **"혹시 고객 예약 문의인가?"** 하고 거의 100% 열어봅니다.
+                * 따라서 첫 문장에 바로 "홍보", "광고" 보다는 **"안녕하세요 {상호명} 원장님! 문의/협업 제안 드립니다."** 처럼 자연스럽게 접근하는 것이 절대적으로 유리합니다.
+                
+                #### 4. 🔗 네이버 톡톡과 병행 추천
+                * 인스타 DM이 없거나 닫힌 업체는 **네이버 톡톡**을 병행해 보세요. 
+                * 톡톡은 사장님의 '네이버 스마트플레이스' 앱으로 즉각적인 실시간 푸시 알림이 가기 때문에 도달율과 즉각적인 오픈율이 거의 **100%**에 달합니다.
+                """)
 
     # [DIAGNOSIS] Show DB status to user
     # --- [1] Data Loading & Variable Initialization ---
@@ -656,28 +888,46 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
         t_df = df_fresh[df_fresh[col_filter].notna() & (df_fresh[col_filter] != "")].copy()
     else:
         t_df = pd.DataFrame()
-    
-    if not t_df.empty:
-        # [NEW] Smart Toggle Selection Button
-        sel_col1, sel_col2, sel_spacer = st.columns([1, 1.5, 4])
-        if sel_col1.button("🔄 데이터 갱신", key=f"refresh_{track_id}", use_container_width=True):
-            st.session_state[f'sel_track_{track_id}'] = {} # Reset selection
-            st.rerun()
 
+    # [NEW] Append Test Recipients for Display ONLY (Rule 3.3)
+    t_key = f"test_recipients_{track_id}"
+    recs = st.session_state.get(t_key, ["", "", ""])
+    test_rows = []
+    for i, val in enumerate(recs):
+        if val:
+            row = {
+                "id": f"test_{i}",
+                "상호명": f"✨ [테스트] 수신자 {i+1}",
+                "주소": "테스트 전용",
+                "번호": "010-0000-0000",
+                col_filter: val,
+                "결과(E)": "None", "로그(E)": "None", "결과(I)": "None", "로그(I)": "None"
+            }
+            test_rows.append(row)
+    
+    if test_rows:
+        tdf_test = pd.DataFrame(test_rows)
+        if t_df.empty: t_df = tdf_test
+        else: t_df = pd.concat([tdf_test, t_df], ignore_index=True)
+
+    if not t_df.empty:
         # Decide label based on current selection
         track_sel_map = st.session_state.get(f'sel_track_{track_id}', {})
         selected_count_pre = sum(1 for i in t_df.index if track_sel_map.get(str(i), False))
         
         all_selected = (selected_count_pre == len(t_df)) and (len(t_df) > 0)
-        btn_label = "⬜ 전체 선택 해제" if all_selected else "✅ 전체 선택"
+        btn_label = "⬜ 전체 해제" if all_selected else "✅ 전체 선택"
         
-        if sel_col2.button(btn_label, key=f"toggle_all_{track_id}", use_container_width=True):
+        # [MOD] Header + Select All button on the same line (Rule: Space Optimization)
+        h_col1, h_col2 = st.columns([3, 1], vertical_alignment="bottom")
+        header_pos = h_col1.empty()
+        
+        if h_col2.button(btn_label, key=f"toggle_all_{track_id}", use_container_width=True):
             new_state = not all_selected
             for i in t_df.index: st.session_state[f'sel_track_{track_id}'][str(i)] = new_state
             st.rerun()
 
-        # [REFIXED] Use placeholder to avoid "one-step behind" count issue
-        header_pos = st.empty()
+
         st.caption(f"💡 {col_filter} 정보가 있는 업체만 표시됩니다. (전체 {total_db_rows}건 중 {len(t_df)}건)")
 
         t_df['선택'] = [st.session_state[f'sel_track_{track_id}'].get(str(i), False) for i in t_df.index]
@@ -801,13 +1051,16 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
                             ok, err = send_email(u, p, s['이메일'], 
                                                st.session_state['tpl_A']['subject'], 
                                                format_tpl(st.session_state['tpl_A']['body'], s['상호명']), 
-                                               smtp_server=smtp_host)
+                                               smtp_server=smtp_host,
+                                               smtp_port=p_info.get('port', 465),
+                                               sender_name=st.session_state['tpl_A'].get('sender_name', ''))
                             
-                            # [NEW] Update DB Real-time using ID
-                            db_h = DBHandler(config.LOCAL_DB_PATH)
-                            db_h.update_send_status(s['id'], 'email', 
-                                                  '성공' if ok else '실패', 
-                                                  '발송완료' if ok else err)
+                            # [NEW] Update DB Real-time using ID (Skip for virtual test rows)
+                            if not str(s['id']).startswith('test_'):
+                                db_h = DBHandler(config.LOCAL_DB_PATH)
+                                db_h.update_send_status(s['id'], 'email', 
+                                                      '성공' if ok else '실패', 
+                                                      '발송완료' if ok else err)
                             
                             # [NEW] Update Table UI Real-time
                             t_df.loc[s.name, '결과(E)'] = '성공' if ok else '실패'
@@ -849,15 +1102,46 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
                         # Reset State for New Job
                         st.session_state[res_key] = {"total": len(selected), "success": 0, "fail": 0, "log": "엔진 시동 중...", "active": True}
                         
-                        log_path = os.path.abspath("instagram_dm.log")
+                        log_path = config.INSTA_LOG_FILE
                         with open(log_path, 'w', encoding='utf-8') as f: 
                             f.write(f"--- {label} 발송 시작: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
                         
+                        is_frozen = getattr(sys, 'frozen', False)
                         base_dir = os.path.dirname(os.path.abspath(__file__))
-                        script_path = os.path.join(base_dir, '..', 'messenger', 'safe_messenger.py')
+                        
+                        if is_frozen:
+                            exe_path = sys.executable
+                            bundle_dir = getattr(sys, '_MEIPASS', os.path.dirname(exe_path))
+                            # Script is in _internal/messenger or messenger
+                            script_path = os.path.join(bundle_dir, 'messenger', 'safe_messenger.py')
+                            if not os.path.exists(script_path):
+                                script_path = os.path.join(os.path.dirname(exe_path), '_internal', 'messenger', 'safe_messenger.py')
+                        else:
+                            script_path = os.path.join(base_dir, '..', 'messenger', 'safe_messenger.py')
+                            
                         cmd = [sys.executable, script_path, targets_data, msg, 'insta', 'NONE', creds]
                         
-                        proc = subprocess.Popen(cmd, cwd=os.path.dirname(script_path), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        my_env = os.environ.copy()
+                        my_env["PYTHONIOENCODING"] = "utf-8"
+                        my_env["PYTHONUNBUFFERED"] = "1"
+                        # [FIX] Point to system-level ms-playwright browser install.
+                        # The bundled playwright driver does not include browsers;
+                        # they live in %LOCALAPPDATA%\ms-playwright on the user's machine.
+                        system_pw_path = os.path.join(
+                            os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+                            "ms-playwright"
+                        )
+                        if os.path.exists(system_pw_path):
+                            my_env["PLAYWRIGHT_BROWSERS_PATH"] = system_pw_path
+
+                        proc = subprocess.Popen(
+                            cmd, 
+                            cwd=os.path.dirname(script_path), 
+                            env=my_env,
+                            stdout=subprocess.PIPE, 
+                            stderr=subprocess.PIPE,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                        )
                         
                         last_line_idx = 0
                         while proc.poll() is None:
@@ -885,8 +1169,9 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
                                                     match_row = selected[selected['상호명'] == target_name]
                                                     if not match_row.empty:
                                                         s_id = match_row.iloc[0]['id']
-                                                        db_h = DBHandler(config.LOCAL_DB_PATH)
-                                                        db_h.update_send_status(s_id, 'insta', status, err_info)
+                                                        if not str(s_id).startswith('test_'):
+                                                            db_h = DBHandler(config.LOCAL_DB_PATH)
+                                                            db_h.update_send_status(s_id, 'insta', status, err_info)
                                                         
                                                         # [NEW] Update Table UI Real-time for Insta
                                                         t_df.loc[match_row.index[0], '결과(I)'] = '성공' if status == 'Success' else '실패'
@@ -911,6 +1196,56 @@ def render_track(track_id, label, col_filter, cfg_name, df_in):
                                             
                                         last_line_idx = len(lines)
                             time.sleep(1)
+                        
+                        # Final log drain after process exit to capture the last written logs
+                        if os.path.exists(log_path):
+                            with open(log_path, 'r', encoding='utf-8') as f:
+                                lines = f.readlines()
+                                if len(lines) > last_line_idx:
+                                    new_content = lines[last_line_idx:]
+                                    for line in new_content:
+                                        l_str = line.strip()
+                                        if not l_str: continue
+                                        
+                                        # [NEW] Update DB Real-time for Insta
+                                        if "[RESULT]" in l_str:
+                                            parts = [p.strip() for p in l_str.split("|")]
+                                            if len(parts) >= 4:
+                                                status = parts[1] # Success or Fail
+                                                target_name = parts[2]
+                                                err_info = parts[4] if len(parts) > 4 else "발송완료"
+                                                
+                                                if status == "Success": success += 1
+                                                else: fail += 1
+                                                
+                                                # Find shop in selected to get detail_url
+                                                match_row = selected[selected['상호명'] == target_name]
+                                                if not match_row.empty:
+                                                    s_id = match_row.iloc[0]['id']
+                                                    if not str(s_id).startswith('test_'):
+                                                        db_h = DBHandler(config.LOCAL_DB_PATH)
+                                                        db_h.update_send_status(s_id, 'insta', status, err_info)
+                                                    
+                                                    # [NEW] Update Table UI Real-time for Insta
+                                                    t_df.loc[match_row.index[0], '결과(I)'] = '성공' if status == 'Success' else '실패'
+                                                    t_df.loc[match_row.index[0], '로그(I)'] = err_info
+                                                    with table_placeholder:
+                                                        st.data_editor(t_df[display_cols], hide_index=True, use_container_width=True, key=f"editor_live_I_{success+fail}_{track_id}_final")
+                                        
+                                        log_text = f"⚙️ {l_str}\n" + log_text
+                                        st.session_state[res_key]['success'] = success
+                                        st.session_state[res_key]['fail'] = fail
+                                        st.session_state[res_key]['log'] = log_text
+                                        
+                                        total_count = len(selected)
+                                        curr_idx = min(success + fail, total_count)
+                                        pct = curr_idx / total_count if total_count > 0 else 0
+                                        p_info_area.markdown(f"**전체 발송 진행률** <span style='float:right; color:#3B82F6; font-weight:800;'>{curr_idx} / {total_count} ({pct*100:.1f}%)</span>", unsafe_allow_html=True)
+                                        p_bar.progress(pct)
+                                        
+                                        success_slot.markdown(f'<div class="section-container" style="text-align:center; padding:1rem; border-top: 4px solid #00E676;"><p class="input-label" style="color:#00E676;">✅ 발송 성공</p><h3 style="margin:0; color:#00E676;">{success} <span style="font-size:0.8rem; color:#94A3B8;">건</span></h3></div>', unsafe_allow_html=True)
+                                        fail_slot.markdown(f'<div class="section-container" style="text-align:center; padding:1rem; border-top: 4px solid #EF4444;"><p class="input-label" style="color:#EF4444;">❌ 발송 실패</p><h3 style="margin:0; color:#EF4444;">{fail} <span style="font-size:0.8rem; color:#94A3B8;">건</span></h3></div>', unsafe_allow_html=True)
+                                        log_placeholder.code(log_text)
                         
                         st.session_state[res_key]['active'] = False
                         st.session_state[res_key]['log'] = log_text
@@ -1095,8 +1430,9 @@ if st.session_state['active_page'] == 'Shop Search':
                         final_limit = limit if limit else (99999 if is_paid else 50)
                         filter_mode_map = {"전체(상호/업종/메뉴 포함)": "all", "상호명 일치": "name", "업종명 일치": "category"}
                         f_mode = filter_mode_map.get(s_f_mode_ui, "all")
-                        st.session_state['completion_shown'] = False # [NEW] Reset completion flag
-                        run_engine_cmd(s_target, final_limit, s_keyword, filter_mode=f_mode, filter_keyword="")
+                        st.session_state['completion_shown'] = False
+                        st.session_state['celebration_fired'] = False # [NEW] Reset celebration flag
+                        run_engine_cmd(s_target, final_limit, s_keyword, filter_mode=f_mode, filter_keyword=s_keyword)
                         st.rerun()
                     else: st.warning("키워드와 지역을 설정해 주세요.")
 
@@ -1153,15 +1489,38 @@ if st.session_state['active_page'] == 'Shop Search':
                     st.rerun()
                 else:
                     st.info("초기화할 DB 파일이 없습니다.")
+    # --- 2. Live Monitoring Section ---
     st.markdown('<div class="section-title" style="margin-top:1rem;">📊 실시간 수집 상세 현황</div>', unsafe_allow_html=True)
     prog = get_crawler_progress() or {}
     
-    # [FIXED] Reliable Completion Notification (Monster Rule 3.2)
-    if prog.get("status") == "completed" and not st.session_state.get("completion_shown", False):
-        st.balloons()
-        st.snow() # [NEW] Extra visual celebration
+    # [NEW] Track engine state transition
+    if pid: st.session_state['engine_active_last'] = True
+
+    # [NEW] Robust Completion Detection (Monster Rule 3.3)
+    is_explicit_done = (prog.get("status") == "completed")
+    # Percentage fallback
+    is_pct_done = (prog.get("success_count", 0) >= prog.get("estimated_total", 1) and prog.get("estimated_total", 0) > 0)
+    # Transition fallback: Engine stopped after being active, and we have data
+    is_stopped_after_active = (pid is None and st.session_state.get('engine_active_last', False) and prog.get("success_count", 0) > 0)
+    
+    is_completed = is_explicit_done or is_pct_done or is_stopped_after_active
+
+    if is_completed and not st.session_state.get("completion_shown", False):
+        # [NEW] Reset transition flag on completion
+        st.session_state['engine_active_last'] = False
+        # [NEW] Celebration fires only ONCE per collection session
+        if not st.session_state.get("celebration_fired", False):
+            st.balloons()
+            st.snow()
+            st.session_state["celebration_fired"] = True
+            
+            # Force Scroll to Top so the modal is visible (only on first fire)
+            st.components.v1.html(
+                "<script>window.parent.document.querySelector('section.main').scrollTo(0, 0);</script>",
+                height=0
+            )
         
-        # [NEW] Premium Completion Modal (Simulated with high-impact container)
+        # [NEW] Premium Completion Modal
         with st.container(border=True):
             col1, col2 = st.columns([0.1, 0.9])
             with col1: st.title("🎉")
@@ -1175,12 +1534,13 @@ if st.session_state['active_page'] == 'Shop Search':
         st.markdown("---")
 
     
+    is_completed = prog.get("status") == "completed"
     # 2.1 Four Status Cards
     sc1, sc2, sc3, sc4 = st.columns(4, gap="small")
     with sc1:
-        total_val = prog.get("estimated_total", 0)
+        total_val = prog.get("success_count", 0) if is_completed else prog.get("estimated_total", 0)
         total_disp = f"{total_val} <span style='font-size:0.8rem; color:#94A3B8;'>건</span>" if total_val > 0 else "<span style='font-size:1.2rem;'>계산 중...</span>"
-        st.markdown(f'<div class="section-container" style="text-align:center; padding:1rem; border-top: 4px solid #E2E8F0;"><p class="input-label">예상 대상 수 (추정)</p><h3 style="margin:0;">{total_disp}</h3></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-container" style="text-align:center; padding:1rem; border-top: 4px solid #E2E8F0;"><p class="input-label">최종 수집 대상 수</p><h3 style="margin:0;">{total_disp}</h3></div>' if is_completed else f'<div class="section-container" style="text-align:center; padding:1rem; border-top: 4px solid #E2E8F0;"><p class="input-label">예상 대상 수 (추정)</p><h3 style="margin:0;">{total_disp}</h3></div>', unsafe_allow_html=True)
     with sc2:
         st.markdown(f'<div class="section-container" style="text-align:center; padding:1rem; border-top: 4px solid #00E676;"><p class="input-label" style="color:#00E676;">현재 수집 개수</p><h3 style="margin:0; color:#00E676;">{prog.get("success_count", 0)} <span style="font-size:0.8rem; color:#94A3B8;">건</span></h3></div>', unsafe_allow_html=True)
     with sc3:
@@ -1192,12 +1552,13 @@ if st.session_state['active_page'] == 'Shop Search':
     with st.container(border=True):
         total = prog.get("estimated_total", 0)
         current = prog.get("success_count", 0)
-        pct = (current / total * 100) if total > 0 else 0.0
+        pct = 100.0 if is_completed else ((current / total * 100) if total > 0 else 0.0)
         
         col_p1, col_p2 = st.columns([4, 1])
         col_p1.markdown(f"**전체 완료율 (추정)**")
         total_str = str(total) if total > 0 else "?"
-        col_p2.markdown(f"<div style='text-align:right; color:#00E676; font-weight:800;'>{current} / {total_str} ({pct:.1f}%)</div>", unsafe_allow_html=True)
+        disp_total = current if is_completed else total_str
+        col_p2.markdown(f"<div style='text-align:right; color:#00E676; font-weight:800;'>{current} / {disp_total} ({pct:.1f}%)</div>", unsafe_allow_html=True)
         st.progress(pct/100 if pct <= 100 else 1.0)
         
         col_m1, col_m2 = st.columns(2)
@@ -1257,7 +1618,7 @@ if st.session_state['active_page'] == 'Shop Search':
                 key="top_dl_btn"
             )
         
-        st.dataframe(df[['No', '상호명', '주소', '번호', '이메일', '인스타', '톡톡링크']], hide_index=True, use_container_width=True, height=600)
+        st.dataframe(df[['No', '상호명', '주소', '번호', '이메일', '인스타']], hide_index=True, use_container_width=True, height=600)
     else: 
         st.info("데이터가 없습니다.")
 
@@ -1267,7 +1628,13 @@ elif st.session_state['active_page'] == 'Guide':
     st.markdown('<div class="section-title">📖 NPlace-DB 공식 가이드</div>', unsafe_allow_html=True)
     
     with st.container(border=True):
-        st.subheader("📧 이메일 마케팅 설정 (네이버 SMTP)")
+        st.subheader(" 이메일 마케팅 설정 (네이버 SMTP)")
+        
+        st.error("""
+        **[중요] 로그인 실패(535) 해결 방법**  
+        네이버 비밀번호를 그대로 입력하면 보안상 발송이 차단됩니다. 반드시 아래 **2단계 가이드**를 따라 **'앱 암호'**를 발급받아 입력해 주세요!
+        """)
+        
         st.markdown("""
         이메일 발송 기능을 사용하려면 본인의 네이버 계정에서 **SMTP 사용 설정**과 **앱 암호 발급**이 반드시 필요합니다.
         
@@ -1278,30 +1645,27 @@ elif st.session_state['active_page'] == 'Guide':
         4. **[IMAP/SMTP 설정]** 탭으로 이동합니다.
         5. 'IMAP/SMTP 사용' 항목을 **[사용함]**으로 변경하고 확인을 누릅니다.
         
-        *   💡 **안내**: SMTP 서버/포트 정보는 네이버 기본값(`smtp.naver.com` / `465`)으로 이미 세팅되어 있으니 **그대로 두시면 됩니다.**
-        
-        #### **2단계: 네이버 앱 암호 발급 (보안)**
+        #### **2단계: 네이버 앱 암호 발급 (필수)**
         일반 비밀번호는 보안상 차단될 수 있으므로, 반드시 '앱 암호'를 생성해야 합니다.
         1. [네이버 내정보] -> [보안설정] 메뉴로 이동합니다.
-        2. **[2단계 인증]** 항목 우측의 **[관리]** 버튼을 클릭합니다.
+        2. **[2단계 인증]** 항목 우측의 **[관리]** 버튼을 클릭합니다. (2단계 인증이 안 되어 있다면 먼저 설정해 주세요.)
         3. 이동한 페이지의 **맨 아래쪽**으로 스크롤을 내리면 **[비밀번호 관리 (앱 암호)]** 섹션이 나타납니다.
-        4. 종류 선택에서 '직접 입력'을 누르고 **'마케팅몬스터'** 또는 **'NPlaceDB'**라고 입력한 뒤 **[생성]**을 클릭합니다. (하이픈 '-' 등 특수문자는 제외해 주세요.)
-        *   💡 여기서 입력하는 이름은 본인 확인용이며, **메일을 받는 상대방에게는 노출되지 않습니다.**
+        4. 종류 선택에서 '직접 입력'을 누르고 **'NPlaceDB'**라고 입력한 뒤 **[생성]**을 클릭합니다.
         5. 생성된 **16자리 영문 앱 암호**를 복사하여 프로그램의 '비밀번호' 칸에 입력하세요.
         
         ---
         #### **기타 SMTP 설정 안내**
-        *   **Gmail**: 구글 계정 설정에서 '앱 비밀번호' 생성이 필요하며, SMTP 서버는 `smtp.gmail.com`, 포트는 `465`를 사용합니다.
-        *   **Outlook**: `smtp-mail.outlook.com` 서버를 사용합니다.
+        *   **Gmail**: 구글 계정 설정에서 '앱 비밀번호' 생성이 필수입니다.
+        *   **Daum/Hanmail**: 카카오 통합 계정 설정에서 앱 비밀번호를 생성해야 합니다.
         """)
         
         st.divider()
-        st.subheader("📸 인스타 DM 마케팅 가이드")
+        st.subheader(" 인스타 DM 마케팅 가이드")
         st.markdown("""
         인스타그램 마케팅 엔진은 **진짜 브라우저**를 띄워 자동으로 전송하는 고성능 엔진입니다.
         
         #### **1단계: 인스타 계정 등록**
-        1. **[📸 인스타]** 탭 상단의 **[➕ 새 계정 추가]**를 눌러 본인의 인스타 ID와 비밀번호를 등록하세요.
+        1. **[인스타]** 탭 상단의 **[계정 추가]**를 눌러 본인의 인스타 ID와 비밀번호를 등록하세요.
         2. 여러 개의 계정을 등록하고 **드롭다운 메뉴**를 통해 발송 주체를 자유롭게 바꿀 수 있습니다.
         
         #### **2단계: 첫 실행 시 로그인 인증**
@@ -1309,13 +1673,41 @@ elif st.session_state['active_page'] == 'Guide':
         2. **처음 사용하는 계정**일 경우, 인스타 보안 정책에 따라 **로그인 인증**이 필요할 수 있습니다. 
         3. 실시간 로그창의 안내를 확인하며, 필요시 브라우저 창에서 직접 로그인을 완료해 주세요. (한 번 로그인하면 세션이 저장되어 다음부터는 자동으로 진행됩니다.)
         
-        #### **💡 안전한 마케팅을 위한 팁**
-        *   **발송 간격**: 인스타는 단시간에 너무 많은 DM을 보내면 계정이 제한될 수 있습니다. 엔진 내부적으로 **안전한 발송 간격(60~120초)**을 유지하고 있으니 걱정 마세요.
-        *   **메시지 다양화**: 동일한 메시지만 계속 보내는 것보다 조금씩 내용을 바꿔주는 것이 계정 활성화에 도움이 됩니다.
-        
-        ---
+        #### **3단계: [실전 노하우] 스팸 폴더를 피하고 성공율 300% 올리는 노하우**
+        *   **발송 계정 최적화 (Warm-up)**:
+            *   가입 후 거의 사용하지 않은 신규 계정(예: 수집 전용 계정)은 인스타 필터링 봇의 최우선 타겟입니다.
+            *   **평소 다른 사람들과 디엠을 나누고, 스크롤을 내리며 좋아요를 누르던 활동적인 실사용 계정**일수록 스팸 차단 필터를 가볍게 통과합니다.
+            *   계정에 **프로필 사진을 등록**하고, 소개란을 채우며, 일반 사진 게시물을 2~3개 올려 신뢰성 있는 계정으로 만드세요.
+        *   **메시지 개인화**:
+            *   동일한 메시지만 계속 대량 발송하면 인스타 필터링 봇에 걸립니다. 본문에 `{상호명}` 태그를 섞어서 발송하면 각 업체마다 내용이 바뀌므로 스팸 차단 확률이 극적으로 줄어듭니다.
+        *   **"메시지 요청(Requests)"의 특성**:
+            *   서로 팔로우 관계가 아닌 상태에서 DM을 보내면 상대방의 일반 편지함이 아닌 **[메시지 요청]** 폴더로 들어갑니다.
+            *   자영업자/원장님들은 인스타 DM을 통해 실제 고객 문의가 끊임없이 들어오기 때문에, 모르는 계정의 [요청]도 **"혹시 고객 예약 문의인가?"** 하고 거의 100% 열어봅니다.
+            *   따라서 첫 문장에 바로 "홍보", "광고" 보다는 **"안녕하세요 {상호명} 원장님! 문의/협업 제안 드립니다."** 처럼 자연스럽게 접근하는 것이 절대적으로 유리합니다.
+        *   **네이버 톡톡과 병행 추천**:
+            *   인스타 DM이 없거나 닫힌 업체는 **네이버 톡톡**을 병행해 보세요. 톡톡은 사장님의 '네이버 스마트플레이스' 앱으로 즉각적인 실시간 푸시 알림이 가기 때문에 도달율과 즉각적인 오픈율이 거의 **100%**에 달합니다.
         """)
-        st.subheader("🖥️ PC 권장 사양 및 환경")
+        
+        st.divider()
+        st.subheader(" 데이터 저장 위치 및 관리")
+        st.markdown(f"""
+        본 프로그램의 모든 데이터와 설정은 아래 경로에 안전하게 저장됩니다.
+        
+        *   **수집 데이터베이스 (DB)**: 
+            `{config.LOCAL_DB_PATH}`
+            *   *설명: 수집된 업체 정보 및 발송 결과(성공/실패/로그)가 실시간으로 저장되는 SQLite 파일입니다.*
+        *   **마케팅 템플릿 및 계정**: 
+            `{os.path.abspath(TEMPLATE_FILE)}`
+            *   *설명: 저장하신 이메일/인스타 메시지 내용과 계정 정보가 암호화되어 저장됩니다.*
+        *   **수집 엔진 로그**: 
+            `{config.ENGINE_LOG_FILE}`
+            *   *설명: 수집 과정에서 발생하는 상세 로그가 기록됩니다.*
+            
+        > **[TIP]**: 다른 PC로 데이터를 옮기고 싶으시다면 위 `data` 폴더 전체를 복사하여 동일한 위치에 붙여넣으시면 됩니다.
+        """)
+        
+        st.divider()
+        st.subheader(" PC 권장 사양 및 환경")
         st.markdown("""
         *   **CPU**: Intel Core i5 / AMD Ryzen 5 이상
         *   **RAM**: 8GB 이상 (16GB 권장)

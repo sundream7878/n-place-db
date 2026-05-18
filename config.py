@@ -10,7 +10,7 @@ except ImportError:
 # [카페 몬스터] 통합 브랜드 및 기술 규격 적용
 
 PRODUCT_ID = "NPlace-DB"
-CURRENT_VERSION = "1.1.14"
+CURRENT_VERSION = "1.1.46"
 
 # [PRO] Determine dynamic base path: Executable dir if frozen, else project root
 import sys
@@ -19,23 +19,46 @@ if getattr(sys, 'frozen', False):
 else:
     LOCAL_BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 
-LOCAL_DB_PATH = os.path.join(LOCAL_BASE_PATH, "data", "database.sqlite")
-LOCAL_LOG_PATH = os.path.join(LOCAL_BASE_PATH, "data", "log")
-PROGRESS_FILE = os.path.join(LOCAL_LOG_PATH, "progress.json")
-ENGINE_LOG_FILE = os.path.join(LOCAL_BASE_PATH, "data", "app.log")
-
 # [NEW] Persistent User Settings Path (Standard Windows App Behavior)
 if sys.platform == "win32":
     USER_DATA_PATH = os.path.join(os.getenv('APPDATA', LOCAL_BASE_PATH), "NPlace-DB")
 else:
     USER_DATA_PATH = os.path.join(os.path.expanduser("~"), ".nplace_db")
 
+# Ensure persistent directories exist
 os.makedirs(USER_DATA_PATH, exist_ok=True)
-SETTINGS_FILE = os.path.join(USER_DATA_PATH, "user_settings.json")
+os.makedirs(os.path.join(USER_DATA_PATH, "log"), exist_ok=True)
 
-# Ensure base directories exist
-os.makedirs(LOCAL_LOG_PATH, exist_ok=True)
-os.makedirs(os.path.join(LOCAL_BASE_PATH, "data"), exist_ok=True)
+# Centralized Persistent Paths
+LOCAL_DB_PATH = os.path.join(USER_DATA_PATH, "database.sqlite")
+LOCAL_LOG_PATH = os.path.join(USER_DATA_PATH, "log")
+PROGRESS_FILE = os.path.join(LOCAL_LOG_PATH, "progress.json")
+ENGINE_LOG_FILE = os.path.join(USER_DATA_PATH, "app.log")
+LOCAL_TEMPLATE_FILE = os.path.join(USER_DATA_PATH, "templates.json")
+SETTINGS_FILE = os.path.join(USER_DATA_PATH, "user_settings.json")
+INSTA_LOG_FILE = os.path.join(USER_DATA_PATH, "instagram_dm.log")
+
+# [NEW] Automatic Data Migration (Rule 3.3: Portable -> Persistent)
+# Migration should only happen ONCE to prevent old data from reappearing after a reset
+migration_marker = os.path.join(USER_DATA_PATH, ".migration_done")
+old_data_dir = os.path.join(LOCAL_BASE_PATH, "data")
+
+if not os.path.exists(migration_marker) and os.path.exists(old_data_dir):
+    import shutil
+    migrated_any = False
+    for filename in ["database.sqlite", "templates.json", "user_settings.json"]:
+        old_file = os.path.join(old_data_dir, filename)
+        new_file = os.path.join(USER_DATA_PATH, filename)
+        if os.path.exists(old_file) and not os.path.exists(new_file):
+            try:
+                shutil.copy2(old_file, new_file)
+                migrated_any = True
+            except: pass
+    
+    # Always create marker even if no files were found, to prevent future checks
+    try:
+        with open(migration_marker, "w") as f: f.write("done")
+    except: pass
 
 
 

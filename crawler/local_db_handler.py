@@ -43,13 +43,9 @@ class LocalDBHandler:
                         phone TEXT,
                         detail_url TEXT UNIQUE,
                         address TEXT,
-                        latitude REAL,
-                        longitude REAL,
                         email TEXT,
                         instagram_handle TEXT,
                         naver_blog_id TEXT,
-                        talk_url TEXT,
-                        owner_name TEXT,
                         keyword TEXT,
                         last_result_email TEXT,
                         last_msg_email TEXT,
@@ -100,21 +96,17 @@ class LocalDBHandler:
                     cursor = conn.cursor()
                     cursor.execute("""
                     INSERT OR IGNORE INTO shops (
-                        name, phone, detail_url, address, latitude, longitude,
-                        email, instagram_handle, naver_blog_id, talk_url, owner_name, keyword
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        name, phone, detail_url, address,
+                        email, instagram_handle, naver_blog_id, keyword
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     data.get("name"),
                     data.get("phone"),
                     data.get("detail_url"),
                     data.get("address"),
-                    data.get("latitude", 0.0),
-                    data.get("longitude", 0.0),
                     data.get("email"),
                     data.get("instagram_handle"),
                     data.get("naver_blog_id"),
-                    data.get("talk_url"),
-                    data.get("owner_name"),
                     data.get("keyword")
                 ))
                 conn.commit()
@@ -134,16 +126,15 @@ class LocalDBHandler:
                 values = [
                     (
                         d.get("name"), d.get("phone"), d.get("detail_url"), d.get("address"),
-                        d.get("latitude", 0.0), d.get("longitude", 0.0), d.get("email"),
-                        d.get("instagram_handle"), d.get("naver_blog_id"), d.get("talk_url"),
-                        d.get("owner_name"), d.get("keyword")
+                        d.get("email"), d.get("instagram_handle"), d.get("naver_blog_id"),
+                        d.get("keyword")
                     ) for d in data_list
                 ]
                 cursor.executemany("""
                     INSERT OR IGNORE INTO shops (
-                        name, phone, detail_url, address, latitude, longitude,
-                        email, instagram_handle, naver_blog_id, talk_url, owner_name, keyword
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        name, phone, detail_url, address,
+                        email, instagram_handle, naver_blog_id, keyword
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, values)
                 conn.commit()
                 return cursor.rowcount
@@ -209,3 +200,18 @@ class LocalDBHandler:
         except Exception as e:
             logger.error(f"Error getting count: {e}")
             return 0
+
+    def insert_test_account(self, name: str, value: str, type: str) -> bool:
+        """Inserts a specific test account for validation."""
+        if not value: return False
+        
+        test_data = {
+            "name": f"✨ [테스트] {name}",
+            "instagram_handle": value if type == 'insta' else "",
+            "address": "테스트 센터",
+            "phone": "010-0000-0000",
+            "email": value if type == 'email' else "",
+            "detail_url": f"https://place.naver.com/test/{type}/{value}",
+            "keyword": "테스트"
+        }
+        return self.insert_shop(test_data)

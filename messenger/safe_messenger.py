@@ -4,21 +4,29 @@ import logging
 import os
 import sys
 import json
-from playwright.async_api import async_playwright
 
 # Add parent dir to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import config
 
+# [FIX] Ensure Playwright can find browsers in system install (ms-playwright)
+# This is needed when running as a frozen exe sub-process where env vars may not be set.
+_pw_system_path = os.path.join(os.environ.get("LOCALAPPDATA", ""), "ms-playwright")
+if os.path.exists(_pw_system_path) and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _pw_system_path
+
+from playwright.async_api import async_playwright
+
 # Logging setup
-LOG_FILE = os.path.join(os.path.dirname(__file__), '..', 'instagram_dm.log')
+LOG_FILE = config.INSTA_LOG_FILE
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8'),
-        logging.StreamHandler()
-    ]
+        logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a'),
+        logging.StreamHandler(sys.stdout)
+    ],
+    force=True
 )
 logger = logging.getLogger(__name__)
 
@@ -106,17 +114,25 @@ async def send_talktalk_message(page, talk_url, message):
     return False
 
 async def send_instagram_dm(page, insta_url, message, image_path=None):
-    """Automates sending an Instagram DM with robust pop-up handling and optional image."""
+    """Automates sending an Instagram DM with robust pop-up handling and optional image. Returns (success_bool, status_msg)."""
     logger.info(f"Opening Instagram Target: {insta_url}")
     try:
         # domcontentloaded is faster and less prone to background noise than networkidle
         await page.goto(insta_url, wait_until="domcontentloaded", timeout=45000)
     except Exception as e:
         logger.warning(f"Initial navigation to {insta_url} slow, attempting to proceed anyway: {e}")
-        # If it failed to load completely in 45s, it might still have enough content to find the button
-
         
     await human_delay(4, 7)
+    
+    # [NEW] Check for non-existent page
+    try:
+        title = await page.title()
+        body_text = await page.locator("body").inner_text()
+        if "Page not found" in title or "페이지를 사용할 수 없습니다" in title or "Page Not Found" in title or "Sorry, this page isn't available" in body_text or "페이지를 사용할 수 없습니다" in body_text:
+            logger.error("Instagram profile not found (404/Invalid Page). The account might be deleted or private/restricted.")
+            return False, "존재하지 않는 계정"
+    except Exception as check_err:
+        logger.warning(f"Failed to check page title/body text: {check_err}")
     
     # --- HANDLING COMMON POP-UPS ---
     # Dialogs like 'Turn on Notifications' or 'Save Info' can block interactions
@@ -220,7 +236,7 @@ async def send_instagram_dm(page, insta_url, message, image_path=None):
         # Check for login wall (like previous screenshot)
         if "login" in page.url or await page.locator("input[name='username']").count() > 0:
             logger.warning("Still seeing login screen! Login might have failed.")
-            return False
+            return False, "로그인 페이지로 리다이렉트됨 (인증 만료)"
 
         # Check for another potential 'Not Now' after navigation
         for selector in not_now_selectors:
@@ -309,18 +325,21 @@ async def send_instagram_dm(page, insta_url, message, image_path=None):
                         logger.error(f"Failed to attach image: {e}")
 
                 logger.info("Instagram DM flow completed successfully.")
-                return True
+                return True, "발송완료"
             except Exception as e:
                 logger.error(f"Error during message typing/sending: {e}")
+                return False, f"메시지 전송 중 오류: {e}"
         else:
             logger.error("Could not find Instagram chat input box.")
             try: await page.screenshot(path=os.path.join(USER_DATA_DIR, "debug_insta_no_input.png"))
             except: pass
+            return False, "인스타 채팅 입력란 없음"
     else:
         logger.error("Could not find 'Message' button on profile. Profile might be private or UI changed.")
         try: await page.screenshot(path=os.path.join(USER_DATA_DIR, "debug_insta_no_msg_btn.png"))
         except: pass
-    return False
+        return False, "프로필에서 메시지 버튼을 찾을 수 없음"
+    return False, "알 수 없는 오류"
 
 async def login_instagram(page, username, password):
     """Handles Instagram login with intelligent session check."""
@@ -494,6 +513,7 @@ async def main(target_list_json, message, method="both", naver_creds=None, insta
         for idx, shop in enumerate(targets):
             logger.info(f"[{idx+1}/{len(targets)}] Targeting: {shop['상호명']}")
             success = False
+            err_msg = "Unknown error"
             
             # --- Naver TalkTalk ---
             if method in ["talk", "both"] and shop.get('톡톡링크'):
@@ -505,7 +525,22 @@ async def main(target_list_json, message, method="both", naver_creds=None, insta
                 if shop.get('인스타'):
                     # Personalized message replacement
                     personalized_msg = message.replace("{상호명}", shop.get('상호명', '원장님'))
-                    success = await send_instagram_dm(page, shop['인스타'], personalized_msg, image_path=image_path)
+                    
+                    # [FIX] Normalize Instagram handle/URL → always full URL
+                    raw_insta = shop['인스타'].strip()
+                    if raw_insta.startswith("http"):
+                        # Already a full URL – ensure it ends with /
+                        insta_url = raw_insta.rstrip("/") + "/"
+                    elif raw_insta.startswith("/"):
+                        # e.g. "/username"
+                        insta_url = f"https://www.instagram.com{raw_insta.rstrip('/')}/"
+                    else:
+                        # Bare handle: "username" or "@username"
+                        handle = raw_insta.lstrip("@")
+                        insta_url = f"https://www.instagram.com/{handle}/"
+                    
+                    logger.info(f"Resolved Instagram URL: {insta_url}")
+                    success, err_msg = await send_instagram_dm(page, insta_url, personalized_msg, image_path=image_path)
             
             if success:
                 logger.info(f"[RESULT] | Success | {shop['상호명']} | {shop.get('인스타', 'NoInsta')}")
@@ -516,7 +551,6 @@ async def main(target_list_json, message, method="both", naver_creds=None, insta
                 else:
                     logger.info("Last target reached. No wait needed.")
             else:
-                err_msg = "Unknown error" # Could be refined if needed
                 logger.warning(f"[RESULT] | Fail | {shop['상호명']} | {shop.get('인스타', 'NoInsta')} | {err_msg}")
                 if idx < len(targets) - 1:
                     await human_delay(5, 10)
