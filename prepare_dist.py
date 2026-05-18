@@ -2,9 +2,11 @@ import os
 import shutil
 import json
 import glob
+import config
 
 def cleanup():
-    print("N-Place-DB Pro 배포 준비 (데이터 초기화) 시작...")
+    v = config.CURRENT_VERSION
+    print(f"N-Place-DB Pro (v{v}) 배포 준비 및 자동 ZIP 압축 시작...")
     
     root_dir = os.path.dirname(os.path.abspath(__file__))
     
@@ -17,14 +19,12 @@ def cleanup():
         except Exception as e:
             print(f"  Error deleting {log_file}: {e}")
 
-    # 2. Clear Database & License (CafeMonster Standard Path)
-    print("- 데이터베이스 및 라이선스 삭제 중 (C:/CafeMonster)...")
-    cafe_data_dir = "C:\\CafeMonster\\Crawler\\data"
-    db_file = os.path.join(cafe_data_dir, "database.sqlite")
-    license_file = os.path.join(cafe_data_dir, "license.dat")
+    # 2. Clear Database & License
+    print("- 로컬 데이터베이스 삭제 중 (배포용 클린 버전)...")
+    db_file = os.path.join(root_dir, "data", "database.sqlite")
     checkpoint_file = os.path.join(root_dir, "crawler_checkpoint.json")
     
-    for f in [db_file, license_file, checkpoint_file]:
+    for f in [db_file, checkpoint_file]:
         if os.path.exists(f):
             try:
                 os.remove(f)
@@ -34,7 +34,7 @@ def cleanup():
 
     # 3. Clear Browser Sessions
     print("- 브라우저 세션 정보 삭제 중...")
-    session_dir = os.path.join(root_dir, "browser_session")
+    session_dir = os.path.join(root_dir, "messenger", "browser_session")
     if os.path.exists(session_dir):
         try:
             shutil.rmtree(session_dir)
@@ -69,7 +69,7 @@ def cleanup():
                 print(f"  Deleted: {os.path.basename(f)}")
             except: pass
 
-    # 5. Reset Templates (Personal Credentials)
+    # 5. Reset Templates (Personal Credentials for Security)
     print("- 템플릿 및 계정 정보 초기화 중...")
     tpl_path = os.path.join(root_dir, "admin_dashboard", "templates.json")
     if os.path.exists(tpl_path):
@@ -99,43 +99,103 @@ def cleanup():
         except: pass
     print("  Cleaned: __pycache__")
     
-    # 7. Finalize Distribution Files
-    print("- 배포 필수 파일 복사 중 (Launcher & Dependencies)...")
+    # 7. Package Compiled Folder in dist/
+    dist_folder_name = f"NPlace-DB-v{v}"
+    dist_final_dir = os.path.join(root_dir, "dist", dist_folder_name)
     
-    # Check for Pro or Basic dist folders
-    targets = [
-        ("NPlace-DB", "NPlace-DB-실행.bat"),
-        ("Place-DB-Pro", "Place-DB-Pro-실행.bat"),
-        ("Place-DB-Basic", "Place-DB-Basic-실행.bat")
-    ]
-    
-    for folder_name, launcher_target in targets:
-        dist_final_dir = os.path.join(root_dir, "dist", folder_name)
-        if os.path.exists(dist_final_dir):
-            try:
-                # Copy Launcher & README
-                # Determine which local launcher to copy
-                launcher_src = "Place-DB-Pro-실행.bat" if "Pro" in folder_name else "Place-DB-Basic-실행.bat"
-                if not os.path.exists(os.path.join(root_dir, launcher_src)):
-                    launcher_src = "Place-DB-Pro-실행.bat" # Fallback if only one exists locally
-                
-                shutil.copy2(os.path.join(root_dir, launcher_src), 
-                             os.path.join(dist_final_dir, launcher_target))
-                shutil.copy2(os.path.join(root_dir, "README_USER.md"), 
-                             os.path.join(dist_final_dir, "사용방법_필독.md"))
-                
-                # Copy Dependencies folder
-                dep_target = os.path.join(dist_final_dir, "dependencies")
-                if os.path.exists(dep_target): shutil.rmtree(dep_target)
-                shutil.copytree(os.path.join(root_dir, "dependencies"), dep_target)
-                
-                print(f"  Copied Launcher & Dependencies to: {dist_final_dir}")
-            except Exception as e:
-                print(f"  [{folder_name}] Error finalizing dist files: {e}")
-        else:
-            print(f"  [{folder_name}] Dist directory not found. Skipping.")
+    if os.path.exists(dist_final_dir):
+        try:
+            print(f"- 배포 필수 파일 복사 및 생성 중 ({dist_folder_name})...")
+            
+            # [A] Create Dynamic Version-Correct Batch Launcher
+            launcher_path = os.path.join(dist_final_dir, "NPlace-DB-실행.bat")
+            launcher_content = f"""@echo off
+setlocal
+title NPlace-DB Launcher
 
-    print("\n✅ 배포 준비 완료! 이제 'build_exe.py' 실행 후 'prepare_dist.py'를 다시 실행하여 마무리하세요.")
+echo ======================================================
+echo   NPlace-DB 프로그램 시작 중...
+echo ======================================================
+echo.
+
+:: 1. 필수 런타임 (Visual C++ Redistributable 2015-2022) 확인
+echo [1/2] 필수 시스템 구성 요소 확인 중...
+reg query "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64" /v "Installed" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [!] 일부 시스템에서 Visual C++ 런타임이 필요할 수 있습니다.
+    echo.
+    echo [안내] 수동 설치 링크: https://aka.ms/vs/17/release/vc_redist.x64.exe
+    echo.
+    echo (계속하려면 아무 키나 누르세요... 곧 프로그램이 실행됩니다.)
+    timeout /t 3 >nul
+) else (
+    echo [OK] 시스템 구성 요소가 이미 설치되어 있습니다.
+)
+
+:: 2. 프로그램 실행
+echo.
+echo [2/2] 프로그램을 실행하는 중입니다...
+
+if exist "NPlace-DB-v{v}.exe" (
+    start "" "NPlace-DB-v{v}.exe"
+) else (
+    echo [오류] 실행 파일을 찾을 수 없습니다.
+    echo 폴더 구성을 확인해 주세요.
+    pause
+    exit /b 1
+)
+
+echo ✅ 완료! 이 창은 3초 후 자동으로 닫힙니다.
+timeout /t 3 >nul
+exit
+"""
+            with open(launcher_path, "w", encoding="euc-kr") as lf:
+                lf.write(launcher_content)
+            print("  Created: NPlace-DB-실행.bat")
+
+            # [B] Copy docs/ folder (clean documents)
+            dist_docs_dir = os.path.join(dist_final_dir, "docs")
+            if os.path.exists(dist_docs_dir):
+                shutil.rmtree(dist_docs_dir)
+            shutil.copytree(os.path.join(root_dir, "docs"), dist_docs_dir)
+            print("  Copied: docs/ folder")
+
+            # [C] Create Clean 사용방법_필독.md pointing to in-app guide
+            readme_path = os.path.join(dist_final_dir, "사용방법_필독.md")
+            readme_content = f"""# 사용방법 안내
+프로그램 실행 후 메인 화면의 **[가이드]** 탭에 상세한 사용 방법과 노하우가 내장되어 있습니다.
+
+1. **'NPlace-DB-실행.bat'**을 더블 클릭하여 실행합니다.
+2. 상단 메뉴의 **[가이드]** 탭을 눌러 사용 설명 및 마케팅 꿀팁을 확인해 주세요!
+"""
+            with open(readme_path, "w", encoding="utf-8") as rf:
+                rf.write(readme_content)
+            print("  Created: 사용방법_필독.md")
+
+            # [D] Copy dependencies folder
+            dep_src = os.path.join(root_dir, "dependencies")
+            dep_target = os.path.join(dist_final_dir, "dependencies")
+            if os.path.exists(dep_src):
+                if os.path.exists(dep_target):
+                    shutil.rmtree(dep_target)
+                shutil.copytree(dep_src, dep_target)
+                print("  Copied: dependencies/ folder")
+            
+            # 8. [ZIP ARCHIVE] Automatically Compress to .zip (Monster standard!)
+            print(f"- 배포 폴더 자동 압축 시작 (dist/{dist_folder_name}.zip)...")
+            zip_out_path = os.path.join(root_dir, "dist", dist_folder_name)
+            shutil.make_archive(
+                base_name=zip_out_path,
+                format="zip",
+                root_dir=os.path.join(root_dir, "dist"),
+                base_dir=dist_folder_name
+            )
+            print(f"✅ 압축 완료! 최종 배포 파일: dist/{dist_folder_name}.zip")
+            
+        except Exception as e:
+            print(f"❌ 배포 프로세스 진행 중 오류 발생: {e}")
+    else:
+        print(f"❌ [{dist_folder_name}] 컴파일된 빌드 폴더를 찾을 수 없습니다. 먼저 build_exe.py를 실행하세요.")
 
 if __name__ == "__main__":
     cleanup()
