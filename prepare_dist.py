@@ -6,12 +6,12 @@ import config
 
 def cleanup():
     v = config.CURRENT_VERSION
-    print(f"N-Place-DB Pro (v{v}) 배포 준비 및 자동 ZIP 압축 시작...")
+    print(f"[Cleanup] N-Place-DB Pro (v{v}) distribution packing and zip started...")
     
     root_dir = os.path.dirname(os.path.abspath(__file__))
     
     # 1. Clear Logs
-    print("- 로그 파일 삭제 중...")
+    print("- Deleting log files...")
     for log_file in glob.glob(os.path.join(root_dir, "*.log")):
         try:
             os.remove(log_file)
@@ -20,7 +20,7 @@ def cleanup():
             print(f"  Error deleting {log_file}: {e}")
 
     # 2. Clear Database & License
-    print("- 로컬 데이터베이스 삭제 중 (배포용 클린 버전)...")
+    print("- Deleting local DB and checkpoint (Clean distribution)...")
     db_file = os.path.join(root_dir, "data", "database.sqlite")
     checkpoint_file = os.path.join(root_dir, "crawler_checkpoint.json")
     
@@ -33,7 +33,7 @@ def cleanup():
                 print(f"  Error deleting {f}: {e}")
 
     # 3. Clear Browser Sessions
-    print("- 브라우저 세션 정보 삭제 중...")
+    print("- Wiping browser session info...")
     session_dir = os.path.join(root_dir, "messenger", "browser_session")
     if os.path.exists(session_dir):
         try:
@@ -44,7 +44,7 @@ def cleanup():
             print(f"  Error wiping sessions: {e}")
 
     # 4. Clear Exports & CSV Data
-    print("- 내보내기 폴더 및 CSV 데이터 삭제 중...")
+    print("- Wiping exports folder and CSV files...")
     exports_dir = os.path.join(root_dir, "exports")
     if os.path.exists(exports_dir):
         try:
@@ -70,7 +70,7 @@ def cleanup():
             except: pass
 
     # 5. Reset Templates (Personal Credentials for Security)
-    print("- 템플릿 및 계정 정보 초기화 중...")
+    print("- Resetting template and credential configs...")
     tpl_path = os.path.join(root_dir, "admin_dashboard", "templates.json")
     if os.path.exists(tpl_path):
         default_tpl = {
@@ -92,7 +92,7 @@ def cleanup():
             print(f"  Error resetting templates: {e}")
 
     # 6. Clear Python Cache
-    print("- 파이썬 캐시 정리 중...")
+    print("- Cleaning Python pycache folders...")
     for pycache in glob.glob(os.path.join(root_dir, "**/__pycache__"), recursive=True):
         try:
             shutil.rmtree(pycache)
@@ -105,7 +105,7 @@ def cleanup():
     
     if os.path.exists(dist_final_dir):
         try:
-            print(f"- 배포 필수 파일 복사 및 생성 중 ({dist_folder_name})...")
+            print(f"- Copying and writing dist files into: {dist_folder_name}...")
             
             # [A] Create Dynamic Version-Correct Batch Launcher
             launcher_path = os.path.join(dist_final_dir, "NPlace-DB-실행.bat")
@@ -145,7 +145,7 @@ if exist "NPlace-DB-v{v}.exe" (
     exit /b 1
 )
 
-echo ✅ 완료! 이 창은 3초 후 자동으로 닫힙니다.
+echo [OK] 완료! 이 창은 3초 후 자동으로 닫힙니다.
 timeout /t 3 >nul
 exit
 """
@@ -181,8 +181,8 @@ exit
                 shutil.copytree(dep_src, dep_target)
                 print("  Copied: dependencies/ folder")
             
-            # 8. [ZIP ARCHIVE] Automatically Compress to .zip (Monster standard!)
-            print(f"- 배포 폴더 자동 압축 시작 (dist/{dist_folder_name}.zip)...")
+            # 8. [ZIP ARCHIVE] Automatically Compress to .zip
+            print(f"- Compressing distribution folder into: dist/{dist_folder_name}.zip...")
             zip_out_path = os.path.join(root_dir, "dist", dist_folder_name)
             shutil.make_archive(
                 base_name=zip_out_path,
@@ -190,12 +190,12 @@ exit
                 root_dir=os.path.join(root_dir, "dist"),
                 base_dir=dist_folder_name
             )
-            print(f"✅ 압축 완료! 최종 배포 파일: dist/{dist_folder_name}.zip")
+            print(f"[Success] ZIP compression complete! Final package: dist/{dist_folder_name}.zip")
             
         except Exception as e:
-            print(f"❌ 배포 프로세스 진행 중 오류 발생: {e}")
+            print(f"[Error] Error during packaging: {e}")
     else:
-        print(f"❌ [{dist_folder_name}] 컴파일된 빌드 폴더를 찾을 수 없습니다. 먼저 build_exe.py를 실행하세요.")
+        print(f"[Error] Compiled build directory dist/{dist_folder_name} not found. Please run build_exe.py first.")
 
 if __name__ == "__main__":
     cleanup()
