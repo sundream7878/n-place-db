@@ -67,7 +67,13 @@ def build():
     # 3. Execute Build
     try:
         PyInstaller.__main__.run(args)
-        print("\nBuild Complete! Check 'dist/NPlace-DB.exe'.")
+        print("\n[Build] PyInstaller compilation completed successfully!")
+        
+        # 4. Invoke Automated Packaging & Zip
+        import prepare_dist
+        print("\n[Build] Launching prepare_dist.py to sanitize and package the final ZIP...")
+        prepare_dist.cleanup()
+        
     except Exception as e:
         print(f"\nBuild Failed: {e}")
 

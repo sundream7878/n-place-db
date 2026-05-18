@@ -1,26 +1,11 @@
 {
-    "email_profiles": {
-        "chiu3@naver.com": {
-            "pw": "EgtnchEecg0BZGxi",
-            "smtp": "smtp.naver.com",
-            "port": 465
-        }
-    },
-    "active_email_profile": "chiu3@naver.com",
-    "insta_profiles": {
-        "jinwook.han7878": {
-            "pw": "KCxRKSh+DnkKGg=="
-        }
-    },
-    "active_insta_profile": "jinwook.han7878",
-    "naver_user": "",
-    "naver_pw": "",
-    "insta_user": "",
-    "insta_pw": "",
     "tpl_A": {
-        "subject": "[제안] 바보야 비즈니스 협업 제안드립니다.",
-        "body": "안녕하세요 {상호명} 대표님,\n\n협업 제안 드립니다.\n\n바보야"
+        "subject": "[제안] 비즈니스 협업 제안드립니다.",
+        "body": "안녕하세요 {상호명} 원장님,\n\n협업 제안 드립니다..."
     },
-    "tpl_B": "",
-    "tpl_C": "안녕하세요 {상호명} 원장님, 메시지 드립니다!"
+    "tpl_C": "안녕하세요 {상호명} 원장님, 메시지 드립니다!",
+    "email_user": "",
+    "email_pw": "",
+    "insta_user": "",
+    "insta_pw": ""
 }
